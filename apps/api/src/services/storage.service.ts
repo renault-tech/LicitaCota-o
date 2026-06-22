@@ -38,7 +38,7 @@ export async function salvarArquivo(
         'Content-Type': contentType,
         'x-upsert': 'true',
       },
-      body: conteudo as unknown as BodyInit,
+      body: conteudo as unknown as Uint8Array,
     });
     if (!resp.ok) {
       throw new Error(`Falha ao enviar ao storage (${resp.status}).`);
