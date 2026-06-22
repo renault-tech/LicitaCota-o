@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+pnpm-lock.yaml
+apps/api/src/prisma/generated/

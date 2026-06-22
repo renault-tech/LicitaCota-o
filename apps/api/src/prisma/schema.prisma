@@ -1,0 +1,389 @@
+// LicitaPreço — Schema Prisma
+// Lei Federal nº 14.133/2021 + IN SEGES/ME nº 65/2021
+// Valores monetários em Decimal; dados brutos/configs em Json.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  OPERADOR
+  VISUALIZADOR
+}
+
+enum StatusPesquisa {
+  AGUARDANDO
+  PROCESSANDO
+  CONCLUIDA
+  ERRO
+}
+
+enum StatusItem {
+  PENDENTE
+  COTADO
+  SEM_RESULTADO
+  ERRO
+}
+
+enum TipoFonte {
+  API_REST
+  SCRAPING
+  TABELA_REFERENCIA
+}
+
+enum StatusValidacaoFonte {
+  VALIDA
+  INVALIDA
+  NAO_TESTADA
+}
+
+enum MetodoCalculo {
+  MEDIA
+  MEDIANA
+  MENOR_PRECO
+}
+
+enum TipoNotificacao {
+  PESQUISA_CONCLUIDA
+  FONTE_FALHOU
+  VARIACAO_PRECO
+  SISTEMA
+}
+
+enum StatusCotacaoDireta {
+  ENVIADA
+  RESPONDIDA
+  RECUSADA
+}
+
+// ---------------------------------------------------------------------------
+// Usuários e autenticação
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  nome         String
+  cargo        String?
+  setor        String?
+  municipio    String?
+  uf           String?
+  role         Role     @default(OPERADOR)
+  ativo        Boolean  @default(true)
+  passwordHash String?
+  refreshToken String?
+  // Token de convite / primeiro acesso (definir senha)
+  conviteToken    String?   @unique
+  conviteExpiraEm DateTime?
+  prefNotifEmail  Boolean   @default(true)
+  prefNotifInApp  Boolean   @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  pesquisas        Pesquisa[]
+  fontesCriadas    FonteCotacao[]
+  logs             LogAuditoria[]
+  notificacoes     Notificacao[]
+  configsAlteradas ConfiguracaoSistema[]
+
+  @@index([role])
+}
+
+// ---------------------------------------------------------------------------
+// Pesquisas e itens
+// ---------------------------------------------------------------------------
+
+model Pesquisa {
+  id                  String         @id @default(uuid())
+  titulo              String
+  descricao           String?
+  status              StatusPesquisa @default(AGUARDANDO)
+  userId              String
+  user                User           @relation(fields: [userId], references: [id])
+  totalItens          Int            @default(0)
+  itensComCotacao     Int            @default(0)
+  itensSemCotacao     Int            @default(0)
+  itensComErro        Int            @default(0)
+  resumoCobertura     String?
+  arquivoEntradaUrl   String?
+  arquivoSaidaUrl     String?
+  compartilhada       Boolean        @default(false)
+  linkCompartilhamento String?       @unique @default(uuid())
+  municipio           String?
+  uf                  String?
+  fundamentacaoLegal  String?
+  valorTotalEstimado  Decimal?       @db.Decimal(18, 2)
+  erroProcessamento   String?
+  concluidaEm         DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  itens         ItemPesquisa[]
+  historicos    HistoricoPreco[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ItemPesquisa {
+  id                   String     @id @default(uuid())
+  pesquisaId           String
+  pesquisa             Pesquisa   @relation(fields: [pesquisaId], references: [id], onDelete: Cascade)
+  sequencia            Int
+  nome                 String
+  descricao            String
+  descricaoNormalizada String?
+  quantidade           Decimal    @db.Decimal(18, 4)
+  unidadeMedida        String?
+  cidade               String?
+  uf                   String?
+  camposExtras         Json?
+  precoReferencia      Decimal?   @db.Decimal(18, 4)
+  precoTotal           Decimal?   @db.Decimal(18, 2)
+  statusItem           StatusItem @default(PENDENTE)
+  observacao           String?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  cotacoes        Cotacao[]
+  cotacoesDiretas CotacaoDireta[]
+
+  @@unique([pesquisaId, sequencia])
+  @@index([pesquisaId])
+  @@index([statusItem])
+}
+
+model Cotacao {
+  id                  String       @id @default(uuid())
+  itemPesquisaId      String
+  item                ItemPesquisa @relation(fields: [itemPesquisaId], references: [id], onDelete: Cascade)
+  // Slug da FonteCotacao (ou "manual" para edição manual)
+  fonte               String
+  preco               Decimal?     @db.Decimal(18, 4)
+  referencia          String?
+  fundamentacaoArtigo String?
+  dataConsulta        DateTime     @default(now())
+  erro                String?
+  editadaManualmente  Boolean      @default(false)
+  dadosBrutos         Json?
+
+  @@index([itemPesquisaId])
+  @@index([fonte])
+}
+
+model HistoricoPreco {
+  id            String   @id @default(uuid())
+  itemNome      String
+  fonte         String
+  preco         Decimal  @db.Decimal(18, 4)
+  dataReferencia DateTime @default(now())
+  pesquisaId    String?
+  pesquisa      Pesquisa? @relation(fields: [pesquisaId], references: [id], onDelete: SetNull)
+  municipio     String?
+  uf            String?
+
+  @@index([itemNome])
+  @@index([dataReferencia])
+}
+
+// ---------------------------------------------------------------------------
+// Motor de cotação plugável
+// ---------------------------------------------------------------------------
+
+model FonteCotacao {
+  id                   String               @id @default(uuid())
+  nome                 String
+  slug                 String               @unique
+  tipo                 TipoFonte
+  ativo                Boolean              @default(false)
+  ordem                Int                  @default(0)
+  endpointBase         String?
+  metodoHttp           String               @default("GET")
+  parametrosTemplate   Json?
+  headers              Json?
+  credencialCifrada    String?
+  mapeamentoCampos     Json?
+  regexValor           String?
+  fundamentacaoArtigo  String?
+  limiteResultados     Int                  @default(5)
+  timeoutMs            Int                  @default(15000)
+  pausaMs              Int                  @default(1200)
+  retries              Int                  @default(2)
+  statusValidacao      StatusValidacaoFonte @default(NAO_TESTADA)
+  ultimoTesteEm        DateTime?
+  ultimoTesteResultado Json?
+  criadoPorId          String?
+  criadoPor            User?                @relation(fields: [criadoPorId], references: [id])
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  tabelaReferencia TabelaReferenciaItem[]
+
+  @@index([ativo, statusValidacao])
+  @@index([ordem])
+}
+
+// Linhas de uma fonte do tipo TABELA_REFERENCIA (importadas por planilha)
+model TabelaReferenciaItem {
+  id             String       @id @default(uuid())
+  fonteId        String
+  fonte          FonteCotacao @relation(fields: [fonteId], references: [id], onDelete: Cascade)
+  descricao      String
+  descricaoNorm  String
+  unidadeMedida  String?
+  preco          Decimal      @db.Decimal(18, 4)
+  referencia     String?
+  createdAt      DateTime     @default(now())
+
+  @@index([fonteId])
+  @@index([descricaoNorm])
+}
+
+// ---------------------------------------------------------------------------
+// Configuração do sistema (singleton)
+// ---------------------------------------------------------------------------
+
+model ConfiguracaoSistema {
+  id                     String        @id @default("singleton")
+  municipio              String?
+  uf                     String?
+  brasaoUrl              String?
+  responsavelTecnico     String?
+  metodoCalculo          MetodoCalculo @default(MEDIA)
+  limiteOutlierPercentual Int          @default(30)
+  minFontesCompleta      Int           @default(2)
+  itemAmostraTeste       String        @default("caneta esferográfica azul")
+  textosFundamentacao    Json?
+  smtpConfig             Json?
+  canalSuporte           Json?
+  updatedAt              DateTime      @updatedAt
+  updatedById            String?
+  updatedBy              User?         @relation(fields: [updatedById], references: [id])
+}
+
+// ---------------------------------------------------------------------------
+// Auditoria, notificações, ajuda
+// ---------------------------------------------------------------------------
+
+model LogAuditoria {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  acao       String
+  entidade   String?
+  entidadeId String?
+  detalhe    Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([acao])
+  @@index([entidade])
+  @@index([createdAt])
+}
+
+model Notificacao {
+  id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tipo      TipoNotificacao
+  titulo    String
+  mensagem  String
+  lida      Boolean         @default(false)
+  link      String?
+  createdAt DateTime        @default(now())
+
+  @@index([userId, lida])
+  @@index([createdAt])
+}
+
+model ArtigoAjuda {
+  id              String   @id @default(uuid())
+  categoria       String
+  titulo          String
+  slug            String   @unique
+  conteudoMarkdown String
+  ordem           Int      @default(0)
+  publicado       Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+
+  @@index([categoria])
+}
+
+// ---------------------------------------------------------------------------
+// Normalização e catálogo
+// ---------------------------------------------------------------------------
+
+model DicionarioSinonimo {
+  id        String  @id @default(uuid())
+  termo     String  @unique
+  sinonimos Json
+  expansoes Json
+  ativo     Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ItemCatalogo {
+  id                     String    @id @default(uuid())
+  nomeNormalizado        String    @unique
+  descricaoPadrao        String
+  unidadeMedida          String?
+  vezesUsado             Int       @default(0)
+  ultimoPrecoReferencia  Decimal?  @db.Decimal(18, 4)
+  ultimaDataReferencia   DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([nomeNormalizado])
+}
+
+// ---------------------------------------------------------------------------
+// Cotação direta com fornecedores (incisos II e III)
+// ---------------------------------------------------------------------------
+
+model Fornecedor {
+  id          String   @id @default(uuid())
+  razaoSocial String
+  cnpj        String   @unique
+  contatoNome String?
+  email       String?
+  telefone    String?
+  endereco    String?
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cotacoesDiretas CotacaoDireta[]
+}
+
+model CotacaoDireta {
+  id                  String              @id @default(uuid())
+  itemPesquisaId      String
+  item                ItemPesquisa        @relation(fields: [itemPesquisaId], references: [id], onDelete: Cascade)
+  fornecedorId        String
+  fornecedor          Fornecedor          @relation(fields: [fornecedorId], references: [id])
+  preco               Decimal?            @db.Decimal(18, 4)
+  anexoSolicitacaoUrl String?
+  anexoRespostaUrl    String?
+  dataSolicitacao     DateTime            @default(now())
+  dataResposta        DateTime?
+  justificativa       String
+  status              StatusCotacaoDireta @default(ENVIADA)
+  outlier             Boolean             @default(false)
+  createdAt           DateTime            @default(now())
+
+  @@index([itemPesquisaId])
+  @@index([fornecedorId])
+}
