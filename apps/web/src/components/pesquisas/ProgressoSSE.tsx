@@ -89,7 +89,7 @@ export default function ProgressoSSE({ pesquisaId }: Props) {
   }, [pesquisaId, router]);
 
   const total = progresso?.totalItens ?? 0;
-  const processados = (progresso as unknown as { processados?: number })?.processados ?? 0;
+  const processados = progresso?.processados ?? 0;
   const pct = total > 0 ? Math.round((processados / total) * 100) : 0;
 
   return (
@@ -153,14 +153,14 @@ export default function ProgressoSSE({ pesquisaId }: Props) {
                 <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
                 Processando pesquisa…
               </p>
-              {(progresso as unknown as { itemAtual?: { nome: string } })?.itemAtual && (
+              {progresso?.itemAtual && (
                 <motion.p
-                  key={(progresso as unknown as { itemAtual?: { nome: string } })?.itemAtual?.nome}
+                  key={progresso.itemAtual.nome}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   className="text-xs text-zinc-400 mt-1 truncate"
                 >
-                  Cotando: {(progresso as unknown as { itemAtual?: { nome: string } })?.itemAtual?.nome}
+                  Cotando: {progresso.itemAtual.nome}
                 </motion.p>
               )}
             </div>

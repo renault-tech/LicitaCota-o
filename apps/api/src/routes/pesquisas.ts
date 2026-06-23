@@ -16,8 +16,8 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ok = file.mimetype.includes('spreadsheet') || file.mimetype.includes('excel') || file.originalname.endsWith('.xlsx');
-    cb(null, ok ? true : false);
-    if (!ok) cb(new ValidacaoError('Apenas arquivos .xlsx são aceitos.'));
+    if (!ok) { cb(new ValidacaoError('Apenas arquivos .xlsx são aceitos.')); return; }
+    cb(null, true);
   },
 });
 
@@ -264,21 +264,25 @@ router.get('/:id/progresso', autenticar, async (req, res) => {
     const p = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!p) { res.end(); return; }
 
-    let jobProgress: unknown = null;
+    let jp: Record<string, unknown> | null = null;
     if (p.jobId) {
       const job = await buscarJobPorId(p.jobId).catch(() => null);
-      if (job) jobProgress = job.progress ?? null;
+      if (job?.progress && typeof job.progress === 'object') {
+        jp = job.progress as Record<string, unknown>;
+      }
     }
 
     enviar({
       pesquisaId: p.id,
       status: p.status,
       totalItens: p.totalItens,
-      itensComCotacao: p.itensComCotacao,
-      itensSemCotacao: p.itensSemCotacao,
-      itensComErro: p.itensComErro,
+      processados: jp?.processados ?? 0,
+      itensComCotacao: jp?.itensComCotacao ?? p.itensComCotacao,
+      itensSemCotacao: jp?.itensSemCotacao ?? p.itensSemCotacao,
+      itensComErro: jp?.itensComErro ?? p.itensComErro,
+      itemAtual: jp?.itemAtual ?? null,
+      tempoEstimadoSegundos: jp?.tempoEstimadoSegundos ?? null,
       resumoCobertura: p.resumoCobertura,
-      jobProgress,
     });
 
     if (p.status === 'CONCLUIDA' || p.status === 'ERRO') {

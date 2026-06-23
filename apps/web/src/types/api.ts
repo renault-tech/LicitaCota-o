@@ -176,8 +176,9 @@ export interface ProgressoPesquisa {
   itensComCotacao: number;
   itensSemCotacao: number;
   itensComErro: number;
-  resumoCobertura?: string;
-  jobProgress?: unknown;
+  itemAtual?: { sequencia: number; nome: string; statusItem: StatusItem } | null;
+  tempoEstimadoSegundos?: number | null;
+  resumoCobertura?: string | null;
 }
 
 export interface ItemPlanilhaEntrada {
