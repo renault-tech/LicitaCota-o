@@ -33,7 +33,11 @@ export async function requisitar(url: string, opcoes: OpcoesHttp = {}): Promise<
     try {
       const resp = await fetch(url, {
         method: metodo,
-        headers: { Accept: 'application/json, text/html', ...headers },
+        headers: {
+          Accept: 'application/json, text/html, */*',
+          'User-Agent': 'Mozilla/5.0 (compatible; LicitaPrecoBot/1.0; +https://licitapreco.gov.br)',
+          ...headers,
+        },
         signal: controller.signal,
       });
       clearTimeout(timer);
