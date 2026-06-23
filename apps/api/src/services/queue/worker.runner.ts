@@ -51,6 +51,7 @@ async function processarPesquisa(job: Job<PesquisaJobData>): Promise<void> {
     include: { itens: { orderBy: { sequencia: 'asc' } } },
   });
   if (!pesquisa) throw new Error(`Pesquisa ${pesquisaId} não encontrada.`);
+  const pesquisaAtual = pesquisa;
 
   const fontes = await prisma.fonteCotacao.findMany({
     where: { ativo: true, statusValidacao: 'VALIDA' },
@@ -94,8 +95,8 @@ async function processarPesquisa(job: Job<PesquisaJobData>): Promise<void> {
     );
 
     const resultado = await cotarItem(item.id, itemNormalizado, fontes, parametros, {
-      municipio: pesquisa.municipio ?? item.cidade,
-      uf: pesquisa.uf ?? item.uf,
+      municipio: pesquisaAtual.municipio ?? item.cidade,
+      uf: pesquisaAtual.uf ?? item.uf,
       pesquisaId,
       autorId,
     });
