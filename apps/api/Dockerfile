@@ -36,4 +36,4 @@ COPY --from=builder /app/apps/api/src/prisma/migrations ./apps/api/src/prisma/mi
 ENV NODE_ENV=production
 EXPOSE 3001
 
-CMD ["sh", "-c", "node apps/api/node_modules/.bin/prisma db push --schema=apps/api/src/prisma/schema.prisma --skip-generate --accept-data-loss && node apps/api/dist/server.js"]
+CMD ["sh", "-c", "apps/api/node_modules/.bin/prisma db push --schema=apps/api/src/prisma/schema.prisma --skip-generate --accept-data-loss && node apps/api/dist/server.js"]

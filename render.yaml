@@ -3,11 +3,7 @@ services:
     name: licitacota-o
     runtime: docker
     dockerfilePath: ./apps/api/Dockerfile
-    startCommand: >-
-      node apps/api/node_modules/.bin/prisma db push
-      --schema=apps/api/src/prisma/schema.prisma
-      --skip-generate --accept-data-loss
-      && node apps/api/dist/server.js
+    startCommand: "sh -c 'apps/api/node_modules/.bin/prisma db push --schema=apps/api/src/prisma/schema.prisma --skip-generate --accept-data-loss && node apps/api/dist/server.js'"
     envVars:
       - key: NODE_ENV
         value: production
