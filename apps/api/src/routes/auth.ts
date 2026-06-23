@@ -7,6 +7,8 @@ import { hashSenha, conferirSenha, senhaForte } from '../utils/senha.js';
 import { autenticar } from '../middleware/auth.js';
 import { NaoAutorizadoError, NaoEncontradoError, ValidacaoError } from '../utils/errors.js';
 import { registrarAuditoria } from '../services/auditoria.service.js';
+import { enviarEmail } from '../services/email.service.js';
+import { logger } from '../utils/logger.js';
 
 const router: Router = Router();
 
@@ -146,6 +148,83 @@ router.put('/senha', autenticar, async (req, res, next) => {
       data: { passwordHash: await hashSenha(novaSenha), refreshToken: null },
     });
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// POST /api/auth/esqueci-senha — solicita link de redefinição por e-mail
+router.post('/esqueci-senha', async (req, res, next) => {
+  try {
+    const { email } = z.object({ email: z.string().email() }).parse(req.body);
+
+    // Resposta sempre igual para evitar enumeração de usuários.
+    const resposta = { ok: true, mensagem: 'Se o e-mail estiver cadastrado, você receberá um link em breve.' };
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user || !user.ativo) {
+      res.json(resposta);
+      return;
+    }
+
+    const token = crypto.randomUUID();
+    const expira = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { resetSenhaToken: token, resetSenhaExpiraEm: expira },
+    });
+
+    const link = `${env.FRONTEND_URL}/redefinir-senha?token=${token}`;
+    await enviarEmail({
+      para: user.email,
+      assunto: 'Redefinição de senha — LicitaPreço',
+      html: `
+        <div style="font-family:Inter,Arial,sans-serif;color:#1F3864;max-width:520px;">
+          <h2>Redefinição de senha</h2>
+          <p>Olá, ${user.nome}.</p>
+          <p>Recebemos uma solicitação para redefinir a senha da sua conta no LicitaPreço.</p>
+          <p>Clique no botão abaixo para criar uma nova senha. O link é válido por <strong>1 hora</strong>.</p>
+          <p style="margin:24px 0;">
+            <a href="${link}" style="background:#2E75B6;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">
+              Redefinir minha senha
+            </a>
+          </p>
+          <p style="font-size:12px;color:#666;">Se você não solicitou isso, ignore este e-mail. Sua senha permanece a mesma.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:16px 0;"/>
+          <small style="color:#999;">LicitaPreço — Pesquisa de Preços para Licitações</small>
+        </div>`,
+    }).catch((e) => logger.warn('Falha ao enviar e-mail de reset', e));
+
+    res.json(resposta);
+  } catch (e) { next(e); }
+});
+
+// POST /api/auth/redefinir-senha — aplica nova senha via token de reset
+router.post('/redefinir-senha', async (req, res, next) => {
+  try {
+    const { token, senha } = z.object({
+      token: z.string().min(1),
+      senha: z.string().min(8),
+    }).parse(req.body);
+
+    if (!senhaForte(senha)) throw new ValidacaoError('A senha deve ter ao menos 8 caracteres.');
+
+    const user = await prisma.user.findUnique({ where: { resetSenhaToken: token } });
+    if (!user || !user.resetSenhaExpiraEm || new Date() > user.resetSenhaExpiraEm) {
+      throw new NaoAutorizadoError('Link de redefinição inválido ou expirado.');
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await hashSenha(senha),
+        resetSenhaToken: null,
+        resetSenhaExpiraEm: null,
+        refreshToken: null,
+      },
+    });
+
+    await registrarAuditoria({ userId: user.id, acao: 'RESET_SENHA', ip: req.ip });
+    res.json({ ok: true, mensagem: 'Senha redefinida com sucesso. Faça login.' });
   } catch (e) { next(e); }
 });
 

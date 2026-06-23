@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { toast } from 'sonner';
+import Link from 'next/link';
 import { Eye, EyeOff, Gavel, Loader2 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth';
@@ -95,7 +96,12 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="label">Senha</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="label !mb-0">Senha</label>
+                <Link href="/esqueci-senha" className="text-xs text-blue-500 hover:text-blue-700 transition-colors">
+                  Esqueci minha senha
+                </Link>
+              </div>
               <div className="relative">
                 <input
                   {...register('senha')}

@@ -85,6 +85,9 @@ model User {
   // Token de convite / primeiro acesso (definir senha)
   conviteToken    String?   @unique
   conviteExpiraEm DateTime?
+  // Token de redefinição de senha (esqueci minha senha)
+  resetSenhaToken    String?   @unique
+  resetSenhaExpiraEm DateTime?
   prefNotifEmail  Boolean   @default(true)
   prefNotifInApp  Boolean   @default(true)
   createdAt    DateTime @default(now())
