@@ -18,7 +18,8 @@ interface PrecoItem {
 }
 
 async function buscarCodigosCatmat(termo: string): Promise<number[]> {
-  const url = `${BASE}/modulo-material/4_consultarItemMaterial?descricaoItem=${encodeURIComponent(termo)}&pagina=1&tamanhoPagina=5&statusItem=true`;
+  // tamanhoPagina deve estar entre 10 e 500 nesta API
+  const url = `${BASE}/modulo-material/4_consultarItemMaterial?descricaoItem=${encodeURIComponent(termo)}&pagina=1&tamanhoPagina=10`;
   const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
   if (!resp.ok) return [];
   const body = resp.corpoJson as { resultado?: CatmatItem[] } | null;
@@ -32,9 +33,10 @@ async function buscarPrecosPorCodigo(
   codigo: number,
   limite: number,
 ): Promise<{ precos: number[]; referencia: string | null }> {
+  const tamanho = Math.max(10, limite); // mínimo 10
   const url =
     `${BASE}/modulo-pesquisa-preco/1_consultarMaterial` +
-    `?codigoItemCatalogo=${codigo}&pagina=1&tamanhoPagina=${limite}`;
+    `?codigoItemCatalogo=${codigo}&pagina=1&tamanhoPagina=${tamanho}`;
   const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
   if (!resp.ok) return { precos: [], referencia: null };
   const body = resp.corpoJson as { resultado?: PrecoItem[] } | null;

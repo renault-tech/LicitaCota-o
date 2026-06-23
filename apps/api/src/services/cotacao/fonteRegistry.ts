@@ -2,6 +2,7 @@ import type { FonteCotacao } from '@prisma/client';
 import { prisma } from '../../config/prisma.js';
 import { apiRestAdapter } from './apiRest.adapter.js';
 import { comprasGovAdapter } from './comprasGov.adapter.js';
+import { pncpAdapter } from './pncp.adapter.js';
 import { scrapingAdapter } from './scraping.adapter.js';
 import { tabelaReferenciaAdapter } from './tabelaReferencia.adapter.js';
 import type { FonteAdapter } from './adapter.js';
@@ -12,6 +13,7 @@ import type { FonteAdapter } from './adapter.js';
  */
 const ADAPTERS_POR_SLUG: Record<string, FonteAdapter> = {
   'compras-gov': comprasGovAdapter,
+  'pncp': pncpAdapter,
 };
 
 export function adapterPara(tipo: FonteCotacao['tipo'], slug?: string): FonteAdapter {
