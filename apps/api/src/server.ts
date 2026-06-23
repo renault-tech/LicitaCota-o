@@ -43,6 +43,8 @@ app.use(rateLimit({
   message: { erro: 'Muitas requisições. Tente novamente em breve.', codigo: 'RATE_LIMIT' },
 }));
 
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
 registrarRotas(app);
 
 // 404
