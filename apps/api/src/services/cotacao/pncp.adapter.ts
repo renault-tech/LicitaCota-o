@@ -33,26 +33,26 @@ function normalizar(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, ' ').trim();
 }
 
-function modalidadeDe(config: FonteCotacao): number {
-  const p = config.parametrosTemplate as { modalidade?: number } | null;
-  return p?.modalidade ?? 6;
-}
+// Modalidades com maior volume de itens de material/serviço comum
+const MODALIDADES_PRINCIPAIS = [6, 8, 1]; // Pregão, Dispensa Eletrônica, Concorrência
 
-async function buscarContratacoes(modalidade: number, paginas = 2): Promise<Contratacao[]> {
+async function buscarContratacoes(paginas = 2): Promise<Contratacao[]> {
   const dataFinal = dataFormatada(1);
   const dataInicial = dataFormatada(61);
   const todas: Contratacao[] = [];
-  for (let p = 1; p <= paginas; p++) {
-    const url =
-      `${BASE}/consulta/v1/contratacoes/publicacao` +
-      `?dataInicial=${dataInicial}&dataFinal=${dataFinal}` +
-      `&codigoModalidadeContratacao=${modalidade}&pagina=${p}&tamanhoPagina=20`;
-    const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
-    if (!resp.ok) break;
-    const body = resp.corpoJson as { data?: Contratacao[] } | null;
-    const data = body?.data ?? [];
-    todas.push(...data);
-    if (data.length < 20) break;
+  for (const modalidade of MODALIDADES_PRINCIPAIS) {
+    for (let p = 1; p <= paginas; p++) {
+      const url =
+        `${BASE}/consulta/v1/contratacoes/publicacao` +
+        `?dataInicial=${dataInicial}&dataFinal=${dataFinal}` +
+        `&codigoModalidadeContratacao=${modalidade}&pagina=${p}&tamanhoPagina=20`;
+      const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
+      if (!resp.ok) break;
+      const body = resp.corpoJson as { data?: Contratacao[] } | null;
+      const data = body?.data ?? [];
+      todas.push(...data);
+      if (data.length < 20) break;
+    }
   }
   return todas;
 }
@@ -67,11 +67,10 @@ async function buscarItensContratacao(cnpj: string, ano: number, seq: number): P
 }
 
 async function buscarPrecos(
-  modalidade: number,
   termos: string[],
   limite: number,
 ): Promise<{ precos: number[]; referencia: string | null }> {
-  const contratacoes = await buscarContratacoes(modalidade, 3);
+  const contratacoes = await buscarContratacoes(3);
   const precos: number[] = [];
   let referencia: string | null = null;
 
@@ -89,7 +88,7 @@ async function buscarPrecos(
       );
       if (ok && item.valorUnitarioEstimado > 0) {
         precos.push(item.valorUnitarioEstimado);
-        if (!referencia) referencia = `PNCP modal=${modalidade} — ${cnpj} ${ano}/${seq}`;
+        if (!referencia) referencia = `PNCP — ${cnpj} ${ano}/${seq}`;
         if (precos.length >= limite) break;
       }
     }
@@ -101,10 +100,9 @@ export const pncpAdapter: FonteAdapter = {
   slug: 'pncp',
 
   async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoCotacao> {
-    const modalidade = modalidadeDe(config);
     const limite = Math.max(config.limiteResultados > 0 ? config.limiteResultados : 5, 3);
     try {
-      const { precos, referencia } = await buscarPrecos(modalidade, item.cascata, limite);
+      const { precos, referencia } = await buscarPrecos(item.cascata, limite);
       if (precos.length === 0) {
         return { preco: null, referencia: '', fundamentacaoArtigo: config.fundamentacaoArtigo ?? '', dadosBrutos: null };
       }
@@ -122,17 +120,16 @@ export const pncpAdapter: FonteAdapter = {
     }
   },
 
-  async testar(config: FonteCotacao, _itemAmostra: string): Promise<TesteResultado> {
+  async testar(_config: FonteCotacao, _itemAmostra: string): Promise<TesteResultado> {
     const inicio = Date.now();
-    const modalidade = modalidadeDe(config);
     try {
-      // PNCP exige codigoModalidadeContratacao + tamanhoPagina >= 10
+      // Testa com modalidade 6 (Pregão) — maior volume, sempre tem dados recentes
       const dataFinal = dataFormatada(1);
       const dataInicial = dataFormatada(31);
       const url =
         `${BASE}/consulta/v1/contratacoes/publicacao` +
         `?dataInicial=${dataInicial}&dataFinal=${dataFinal}` +
-        `&codigoModalidadeContratacao=${modalidade}&pagina=1&tamanhoPagina=10`;
+        `&codigoModalidadeContratacao=6&pagina=1&tamanhoPagina=10`;
       const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
       const latenciaMs = Date.now() - inicio;
       if (!resp.ok) {
@@ -143,9 +140,9 @@ export const pncpAdapter: FonteAdapter = {
       return {
         ok: count > 0, latenciaMs, amostraPreco: null, amostraReferencia: null,
         mensagem: count > 0
-          ? `PNCP modal=${modalidade} — ${count} contratações recentes em ${latenciaMs}ms.`
-          : `PNCP modal=${modalidade} — sem contratações nos últimos 30 dias.`,
-        dadosBrutos: { modalidade, contratacoes: count },
+          ? `PNCP acessível — ${count} contratações recentes (Pregão + Dispensa + Concorrência) em ${latenciaMs}ms.`
+          : 'PNCP sem contratações recentes no período consultado.',
+        dadosBrutos: { contratacoes: count },
       };
     } catch (e) {
       return {
