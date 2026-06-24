@@ -110,7 +110,7 @@ export const pncpAdapter: FonteAdapter = {
         preco: Math.round(media(precos) * 10000) / 10000,
         referencia: referencia ?? `PNCP — ${new Date().toLocaleDateString('pt-BR')}`,
         fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
-        dadosBrutos: { precos, modalidade },
+        dadosBrutos: { precos },
       };
     } catch (e) {
       return {

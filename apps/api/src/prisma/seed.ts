@@ -1,9 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import {
-  FonteSlug,
-  FUNDAMENTACAO_ARTIGO,
-  TEXTOS_LEGAIS,
-} from '@licitapreco/shared';
+import { FUNDAMENTACAO_ARTIGO, TEXTOS_LEGAIS } from '@licitapreco/shared';
 
 const prisma = new PrismaClient();
 
@@ -37,53 +33,30 @@ async function seedConfiguracao(): Promise<void> {
 async function seedFontes(): Promise<void> {
   const fontes = [
     {
-      slug: FonteSlug.COMPRAS_GOV,
-      nome: 'Compras.gov.br',
+      slug: 'pncp',
+      nome: 'PNCP — Contratações',
       tipo: 'API_REST' as const,
       ordem: 1,
-      endpointBase:
-        'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco/1_consultarMaterial',
+      endpointBase: 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao',
       metodoHttp: 'GET',
-      parametrosTemplate: { pagina: '1', tamanhoPagina: '10', descricao: '{descricaoItem}' },
+      parametrosTemplate: {},
       headers: {},
-      mapeamentoCampos: {
-        listaResultados: 'resultado',
-        preco: ['valorUnitario', 'precoUnitario'],
-        referencia: ['idCompra', 'descricao'],
-      },
-      fundamentacaoArtigo: FUNDAMENTACAO_ARTIGO.comprasGov,
-      limiteResultados: 5,
-    },
-    {
-      slug: FonteSlug.PNCP,
-      nome: 'PNCP',
-      tipo: 'API_REST' as const,
-      ordem: 2,
-      endpointBase: 'https://pncp.gov.br/api/pncp/v1/contratacoes/publicacoes',
-      metodoHttp: 'GET',
-      parametrosTemplate: { q: '{descricaoItem}', pagina: '1', tamanhoPagina: '10' },
-      headers: {},
-      mapeamentoCampos: {
-        listaResultados: 'data',
-        preco: ['valorTotalEstimado', 'valorUnitarioEstimado'],
-        referencia: ['numeroControlePNCP'],
-      },
+      mapeamentoCampos: {},
       fundamentacaoArtigo: FUNDAMENTACAO_ARTIGO.pncp,
       limiteResultados: 5,
     },
     {
-      slug: FonteSlug.MERCADO_PUBLICO,
-      nome: 'Mercado Público',
-      tipo: 'SCRAPING' as const,
-      ordem: 3,
-      endpointBase: 'https://www.mercadopublico.com.br/busca?q={descricaoItem}',
+      slug: 'pncp-atas',
+      nome: 'PNCP — Atas de Registro de Preço',
+      tipo: 'API_REST' as const,
+      ordem: 2,
+      endpointBase: 'https://pncp.gov.br/api/consulta/v1/atas',
       metodoHttp: 'GET',
       parametrosTemplate: {},
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LicitaPrecoBot/1.0)' },
+      headers: {},
       mapeamentoCampos: {},
-      regexValor: 'R\\$\\s?\\d{1,3}(?:\\.\\d{3})*,\\d{2}',
-      fundamentacaoArtigo: FUNDAMENTACAO_ARTIGO.mercadoPublico,
-      limiteResultados: 10,
+      fundamentacaoArtigo: 'Art. 82 da Lei 14.133/2021 — Atas de Registro de Preço publicadas no PNCP',
+      limiteResultados: 5,
     },
   ];
 
@@ -95,12 +68,17 @@ async function seedFontes(): Promise<void> {
         ...f,
         ativo: false,
         statusValidacao: 'NAO_TESTADA',
-        timeoutMs: 15000,
-        pausaMs: 1200,
-        retries: 2,
+        timeoutMs: 30000,
+        pausaMs: 500,
+        retries: 1,
       },
     });
   }
+
+  // Remove fontes que não funcionam mais
+  await prisma.fonteCotacao.deleteMany({
+    where: { slug: { notIn: ['pncp', 'pncp-atas'] } },
+  });
 }
 
 async function seedDicionario(): Promise<void> {
