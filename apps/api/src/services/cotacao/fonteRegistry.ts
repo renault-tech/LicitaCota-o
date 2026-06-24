@@ -25,6 +25,7 @@ const ADAPTERS_POR_SLUG: Record<string, FonteAdapter> = {
   'pncp-convite': pncpAdapter,
   'pncp-dialogo-competitivo': pncpAdapter,
   'pncp-credenciamento': pncpAdapter,
+  'pncp-prequalificacao': pncpAdapter,
 };
 
 export function adapterPara(tipo: FonteCotacao['tipo'], slug?: string): FonteAdapter {
