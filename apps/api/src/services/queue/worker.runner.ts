@@ -16,7 +16,7 @@ interface ParametrosCalculo {
   minFontesCompleta: number;
 }
 
-const CONCORRENCIA_ITENS = 3;
+const CONCORRENCIA_ITENS = 5;
 
 function parseRedisConnection(url: string) {
   try {
