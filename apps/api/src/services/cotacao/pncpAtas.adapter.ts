@@ -96,9 +96,12 @@ async function buscarPrecos(
       const desc = descricaoDeItem(item);
       if (!desc) continue;
       const descNorm = normalizar(desc);
-      const match = termos.some((t) =>
-        normalizar(t).split(' ').filter((w) => w.length > 3).every((w) => descNorm.includes(w)),
-      );
+      const match = termos.some((t) => {
+        const palavras = normalizar(t).split(' ').filter((w) => w.length > 3);
+        if (palavras.length === 0) return false;
+        const acertos = palavras.filter((w) => descNorm.includes(w)).length;
+        return acertos >= Math.max(1, Math.ceil(palavras.length * 0.6));
+      });
       const preco = precoDeItem(item);
       if (match && preco) {
         precos.push(preco);

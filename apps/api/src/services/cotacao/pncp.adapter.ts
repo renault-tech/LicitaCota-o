@@ -30,11 +30,11 @@ function normalizar(s: string): string {
 // Pregão e Dispensa têm maior volume — suficientes para referência de preço
 const MODALIDADES = [6, 8];
 
-async function buscarUmaModalidade(modalidade: number): Promise<Contratacao[]> {
+async function buscarUmaModalidade(modalidade: number, pagina: number): Promise<Contratacao[]> {
   const url =
     `${BASE}/consulta/v1/contratacoes/publicacao` +
-    `?dataInicial=${dataFormatada(61)}&dataFinal=${dataFormatada(1)}` +
-    `&codigoModalidadeContratacao=${modalidade}&pagina=1&tamanhoPagina=20`;
+    `?dataInicial=${dataFormatada(91)}&dataFinal=${dataFormatada(1)}` +
+    `&codigoModalidadeContratacao=${modalidade}&pagina=${pagina}&tamanhoPagina=20`;
   const resp = await requisitar(url, { timeoutMs: 12000, retries: 0 });
   if (!resp.ok) return [];
   const body = resp.corpoJson as { data?: Contratacao[] } | null;
@@ -54,12 +54,12 @@ async function buscarPrecos(
   termos: string[],
   limite: number,
 ): Promise<{ precos: number[]; referencia: string | null }> {
-  // Busca as duas modalidades em paralelo
-  const lotes = await Promise.all(MODALIDADES.map(buscarUmaModalidade));
+  // Busca 2 modalities × 3 páginas em paralelo → até 120 contratações
+  const lotes = await Promise.all(
+    MODALIDADES.flatMap((m) => [1, 2, 3].map((p) => buscarUmaModalidade(m, p))),
+  );
   const contratacoes = lotes.flat();
-
-  // Busca itens em paralelo, limitando a 15 contratações para não sobrecarregar
-  const candidatas = contratacoes.slice(0, 15);
+  const candidatas = contratacoes.slice(0, 40);
   const loteItens = await Promise.all(
     candidatas.map((ct) => {
       const cnpj = ct.orgaoEntidade?.cnpj;
@@ -79,9 +79,13 @@ async function buscarPrecos(
     for (const item of itens as (ContratacaoItem & { _ref: string })[]) {
       if (!item.descricao || !item.valorUnitarioEstimado) continue;
       const descNorm = normalizar(item.descricao);
-      const match = termos.some((t) =>
-        normalizar(t).split(' ').filter((w) => w.length > 3).every((w) => descNorm.includes(w)),
-      );
+      const match = termos.some((t) => {
+        const palavras = normalizar(t).split(' ').filter((w) => w.length > 3);
+        if (palavras.length === 0) return false;
+        const acertos = palavras.filter((w) => descNorm.includes(w)).length;
+        // Aceita se ao menos 60% das palavras-chave batem (mínimo 1)
+        return acertos >= Math.max(1, Math.ceil(palavras.length * 0.6));
+      });
       if (match && item.valorUnitarioEstimado > 0) {
         precos.push(item.valorUnitarioEstimado);
         if (!referencia) referencia = item._ref;

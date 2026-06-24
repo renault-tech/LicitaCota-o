@@ -236,11 +236,13 @@ router.post('/:id/processar', autenticar, async (req, res, next) => {
     if (pesquisa.status === 'PROCESSANDO') throw new ValidacaoError('Pesquisa já está sendo processada.');
     if (pesquisa._count.itens === 0) throw new ValidacaoError('A pesquisa não tem itens. Confirme a planilha primeiro.');
 
-    const jobId = await enfileirarPesquisa(req.params.id, req.usuario.id);
+    // Marca PROCESSANDO ANTES de enfileirar — evita race condition com setImmediate
     await prisma.pesquisa.update({
       where: { id: req.params.id },
-      data: { status: 'PROCESSANDO', erroProcessamento: null, jobId },
+      data: { status: 'PROCESSANDO', erroProcessamento: null },
     });
+    const jobId = await enfileirarPesquisa(req.params.id, req.usuario.id);
+    await prisma.pesquisa.update({ where: { id: req.params.id }, data: { jobId } });
     await registrarAuditoria({ userId: req.usuario.id, acao: 'PESQUISA_ENFILEIRADA', entidade: 'Pesquisa', entidadeId: req.params.id, detalhe: { jobId }, ip: req.ip });
 
     res.json({ ok: true, jobId });
