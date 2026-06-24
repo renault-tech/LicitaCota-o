@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import Sidebar from '@/components/layout/Sidebar';
 import Topbar from '@/components/layout/Topbar';
 import { useAuthStore } from '@/lib/auth';
+import { apiUrl } from '@/lib/api';
 
 const PAGE_TITLES: Record<string, string> = {
   '/pesquisas': 'Pesquisas de Preços',
@@ -25,6 +26,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace('/login');
     }
   }, [accessToken, refreshToken, router]);
+
+  // Ping a cada 4 min para manter o servidor Render acordado
+  useEffect(() => {
+    const ping = () => fetch(apiUrl('/health')).catch(() => {});
+    ping();
+    const id = setInterval(ping, 4 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   if (!accessToken && !refreshToken) return null;
 
