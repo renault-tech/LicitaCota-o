@@ -63,11 +63,11 @@ async function seedFontes(): Promise<void> {
   for (const f of fontes) {
     await prisma.fonteCotacao.upsert({
       where: { slug: f.slug },
-      update: {},
+      update: { ativo: true, statusValidacao: 'VALIDA' },
       create: {
         ...f,
-        ativo: false,
-        statusValidacao: 'NAO_TESTADA',
+        ativo: true,
+        statusValidacao: 'VALIDA',
         timeoutMs: 30000,
         pausaMs: 500,
         retries: 1,
