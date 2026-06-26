@@ -1,11 +1,13 @@
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, ResultadoCotacao, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
+import { logger } from '../../utils/logger.js';
 import { media } from './calculo.js';
 import type { FonteAdapter } from './adapter.js';
 
 const BASE = 'https://pncp.gov.br/api';
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos — reutilizado por todos os itens da pesquisa
+const CACHE_TTL_MS = 10 * 60 * 1000;
+const BATCH_SIZE = 15; // requests de item em paralelo por vez
 
 interface ContratacaoItem {
   descricaoItem?: string;
@@ -22,7 +24,6 @@ interface Contratacao {
 
 type ItemComRef = ContratacaoItem & { _ref: string };
 
-// Cache em módulo: primeira chamada busca do PNCP, demais reutilizam
 let _cache: { itens: ItemComRef[]; expiresAt: number } | null = null;
 let _fetchPromise: Promise<ItemComRef[]> | null = null;
 
@@ -43,15 +44,20 @@ async function buscarUmaModalidade(modalidade: number, pagina: number): Promise<
     `${BASE}/consulta/v1/contratacoes/publicacao` +
     `?dataInicial=${dataFormatada(91)}&dataFinal=${dataFormatada(1)}` +
     `&codigoModalidadeContratacao=${modalidade}&pagina=${pagina}&tamanhoPagina=50`;
-  const resp = await requisitar(url, { timeoutMs: 12000, retries: 0 });
-  if (!resp.ok) return [];
+  const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
+  if (!resp.ok) {
+    logger.warn(`PNCP contratações HTTP ${resp.status}`, { modalidade, pagina, url });
+    return [];
+  }
   const body = resp.corpoJson as { data?: Contratacao[] } | null;
-  return body?.data ?? [];
+  const itens = body?.data ?? [];
+  logger.info(`PNCP modalidade=${modalidade} pág=${pagina}: ${itens.length} contratações`);
+  return itens;
 }
 
 async function buscarItensContrato(cnpj: string, ano: number, seq: number): Promise<ContratacaoItem[]> {
   const url = `${BASE}/pncp/v1/orgaos/${cnpj}/compras/${ano}/${seq}/itens?pagina=1&tamanhoPagina=50`;
-  const resp = await requisitar(url, { timeoutMs: 8000, retries: 0 });
+  const resp = await requisitar(url, { timeoutMs: 10000, retries: 0 });
   if (!resp.ok) return [];
   const body = resp.corpoJson;
   if (Array.isArray(body)) return body as ContratacaoItem[];
@@ -59,29 +65,45 @@ async function buscarItensContrato(cnpj: string, ano: number, seq: number): Prom
 }
 
 async function carregarTodosItens(): Promise<ItemComRef[]> {
-  // Busca 2 modalidades × 5 páginas → até 500 contratações
+  logger.info('PNCP: iniciando carga do cache...');
+
+  // Busca 2 modalidades × 3 páginas → até 300 contratações
   const lotes = await Promise.allSettled(
-    MODALIDADES.flatMap((m) => [1, 2, 3, 4, 5].map((p) => buscarUmaModalidade(m, p))),
+    MODALIDADES.flatMap((m) => [1, 2, 3].map((p) => buscarUmaModalidade(m, p))),
   );
   const contratacoes = lotes
     .filter((r): r is PromiseFulfilledResult<Contratacao[]> => r.status === 'fulfilled')
     .flatMap((r) => r.value);
 
-  const resultados = await Promise.allSettled(
-    contratacoes.map((ct) => {
-      const cnpj = ct.orgaoEntidade?.cnpj;
-      const ano = ct.anoCompra;
-      const seq = ct.sequencialCompra;
-      if (!cnpj || !ano || !seq) return Promise.resolve([] as ItemComRef[]);
-      return buscarItensContrato(cnpj, ano, seq).then((itens) =>
-        itens.map((i) => ({ ...i, _ref: `PNCP — ${cnpj} ${ano}/${seq}` })),
-      );
-    }),
-  );
+  logger.info(`PNCP: ${contratacoes.length} contratações a processar`);
 
-  return resultados
-    .filter((r) => r.status === 'fulfilled')
-    .flatMap((r) => (r as PromiseFulfilledResult<ItemComRef[]>).value);
+  const validas = contratacoes.filter((ct) => ct.orgaoEntidade?.cnpj && ct.anoCompra && ct.sequencialCompra);
+  logger.info(`PNCP: ${validas.length} contratações com CNPJ/ano/seq válidos`);
+
+  // Busca itens em lotes para não sobrecarregar PNCP
+  const todosItens: ItemComRef[] = [];
+  for (let i = 0; i < validas.length; i += BATCH_SIZE) {
+    const lote = validas.slice(i, i + BATCH_SIZE);
+    const resultados = await Promise.allSettled(
+      lote.map((ct) => {
+        const cnpj = ct.orgaoEntidade!.cnpj!;
+        const ano = ct.anoCompra!;
+        const seq = ct.sequencialCompra!;
+        return buscarItensContrato(cnpj, ano, seq).then((itens) =>
+          itens.map((it) => ({ ...it, _ref: `PNCP — ${cnpj} ${ano}/${seq}` })),
+        );
+      }),
+    );
+    for (const r of resultados) {
+      if (r.status === 'fulfilled') todosItens.push(...r.value);
+    }
+    if (i + BATCH_SIZE < validas.length) {
+      await new Promise((res) => setTimeout(res, 300));
+    }
+  }
+
+  logger.info(`PNCP cache carregado: ${todosItens.length} itens de ${validas.length} contratações`);
+  return todosItens;
 }
 
 async function obterItensCache(): Promise<ItemComRef[]> {
@@ -96,6 +118,7 @@ async function obterItensCache(): Promise<ItemComRef[]> {
       return itens;
     })
     .catch((err: unknown) => {
+      logger.error('PNCP: falha ao carregar cache', err);
       _fetchPromise = null;
       throw err;
     });
@@ -105,10 +128,10 @@ async function obterItensCache(): Promise<ItemComRef[]> {
 
 function matcherTermos(termos: string[], descNorm: string): boolean {
   return termos.some((t) => {
-    const palavras = normalizar(t).split(' ').filter((w) => w.length > 3);
+    const palavras = normalizar(t).split(' ').filter((w) => w.length > 2);
     if (palavras.length === 0) return false;
     const acertos = palavras.filter((w) => descNorm.includes(w)).length;
-    return acertos >= Math.max(1, Math.ceil(palavras.length * 0.6));
+    return acertos >= Math.max(1, Math.ceil(palavras.length * 0.5));
   });
 }
 
@@ -117,6 +140,7 @@ async function buscarPrecos(
   limite: number,
 ): Promise<{ precos: number[]; referencia: string | null }> {
   const todosItens = await obterItensCache();
+  logger.info(`PNCP busca: ${todosItens.length} itens no cache, termos=${JSON.stringify(termos).slice(0, 120)}`);
 
   const precos: number[] = [];
   let referencia: string | null = null;
@@ -132,6 +156,7 @@ async function buscarPrecos(
     }
   }
 
+  logger.info(`PNCP busca resultado: ${precos.length} preços encontrados`);
   return { precos, referencia };
 }
 
@@ -152,6 +177,7 @@ export const pncpAdapter: FonteAdapter = {
         dadosBrutos: { precos },
       };
     } catch (e) {
+      logger.error('PNCP consultar erro', e);
       return {
         preco: null, referencia: '', fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
         dadosBrutos: null, erro: e instanceof Error ? e.message : 'Erro',
@@ -188,3 +214,12 @@ export const pncpAdapter: FonteAdapter = {
     }
   },
 };
+
+/** Expõe status do cache para diagnóstico. */
+export function pncpCacheStatus(): { itens: number; expiresAt: number | null; carregando: boolean } {
+  return {
+    itens: _cache?.itens.length ?? 0,
+    expiresAt: _cache?.expiresAt ?? null,
+    carregando: _fetchPromise !== null,
+  };
+}

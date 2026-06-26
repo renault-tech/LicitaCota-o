@@ -1,6 +1,7 @@
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, ResultadoCotacao, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
+import { logger } from '../../utils/logger.js';
 import { media } from './calculo.js';
 import type { FonteAdapter } from './adapter.js';
 
@@ -70,16 +71,20 @@ async function buscarItensAta(cnpj: string, ano: number, seq: number, nata: numb
 }
 
 async function carregarTodosItens(): Promise<AtaItemComRef[]> {
+  logger.info('PNCP Atas: iniciando carga do cache...');
   let atas: Ata[];
   try {
     atas = await buscarAtas();
-  } catch {
+  } catch (e) {
+    logger.error('PNCP Atas: falha ao buscar atas', e);
     return [];
   }
 
   const candidatas = atas
     .map(parsearAta)
     .filter((a): a is NonNullable<ReturnType<typeof parsearAta>> => a !== null);
+
+  logger.info(`PNCP Atas: ${atas.length} atas recebidas, ${candidatas.length} válidas`);
 
   const resultados = await Promise.allSettled(
     candidatas.map(({ cnpj, anoCompra, sequencialCompra, sequencialAta }) =>
@@ -92,9 +97,12 @@ async function carregarTodosItens(): Promise<AtaItemComRef[]> {
     ),
   );
 
-  return resultados
+  const todos = resultados
     .filter((r) => r.status === 'fulfilled')
     .flatMap((r) => (r as PromiseFulfilledResult<AtaItemComRef[]>).value);
+
+  logger.info(`PNCP Atas cache carregado: ${todos.length} itens de ${candidatas.length} atas`);
+  return todos;
 }
 
 async function obterItensCache(): Promise<AtaItemComRef[]> {
@@ -118,10 +126,10 @@ async function obterItensCache(): Promise<AtaItemComRef[]> {
 
 function matcherTermos(termos: string[], descNorm: string): boolean {
   return termos.some((t) => {
-    const palavras = normalizar(t).split(' ').filter((w) => w.length > 3);
+    const palavras = normalizar(t).split(' ').filter((w) => w.length > 2);
     if (palavras.length === 0) return false;
     const acertos = palavras.filter((w) => descNorm.includes(w)).length;
-    return acertos >= Math.max(1, Math.ceil(palavras.length * 0.6));
+    return acertos >= Math.max(1, Math.ceil(palavras.length * 0.5));
   });
 }
 
@@ -130,6 +138,7 @@ async function buscarPrecos(
   limite: number,
 ): Promise<{ precos: number[]; referencia: string | null }> {
   const todosItens = await obterItensCache();
+  logger.info(`PNCP Atas busca: ${todosItens.length} itens no cache, termos=${JSON.stringify(termos).slice(0, 80)}`);
 
   const precos: number[] = [];
   let referencia: string | null = null;
@@ -145,6 +154,7 @@ async function buscarPrecos(
     }
   }
 
+  logger.info(`PNCP Atas busca resultado: ${precos.length} preços encontrados`);
   return { precos, referencia };
 }
 
