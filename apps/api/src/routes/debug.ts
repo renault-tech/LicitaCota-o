@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { prisma } from '../config/prisma.js';
+import { autenticar, exigirRole } from '../middleware/auth.js';
 import { requisitar } from '../utils/http.js';
 import { pncpCacheStatus } from '../services/cotacao/pncp.adapter.js';
 import { pncpAtasCacheStatus } from '../services/cotacao/pncpAtas.adapter.js';
@@ -7,10 +8,10 @@ import { pncpAtasCacheStatus } from '../services/cotacao/pncpAtas.adapter.js';
 const router: ReturnType<typeof Router> = Router();
 
 /**
- * GET /api/debug/status
+ * GET /api/debug/status — restrito a ADMIN.
  * Diagnóstico: fontes ativas, conectividade PNCP e status dos caches em memória.
  */
-router.get('/status', async (_req: Request, res: Response) => {
+router.get('/status', autenticar, exigirRole('ADMIN'), async (_req: Request, res: Response) => {
   const erros: string[] = [];
 
   // 1. FonteCotacao no banco
@@ -82,11 +83,11 @@ router.get('/status', async (_req: Request, res: Response) => {
 });
 
 /**
- * POST /api/debug/reset-fontes
+ * POST /api/debug/reset-fontes — restrito a ADMIN.
  * Força ambas as fontes PNCP para ativo=true, statusValidacao=VALIDA.
  * Usar quando o auto-teste desativou uma fonte por falha transiente.
  */
-router.post('/reset-fontes', async (_req: Request, res: Response) => {
+router.post('/reset-fontes', autenticar, exigirRole('ADMIN'), async (_req: Request, res: Response) => {
   try {
     const result = await prisma.fonteCotacao.updateMany({
       where: { slug: { in: ['pncp', 'pncp-atas'] } },

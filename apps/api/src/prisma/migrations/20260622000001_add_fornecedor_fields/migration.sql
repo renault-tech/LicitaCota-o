@@ -1,3 +1,3 @@
-ALTER TABLE "Fornecedor" ADD COLUMN "nomeFantasia" TEXT;
-ALTER TABLE "Fornecedor" ADD COLUMN "municipio"    TEXT;
-ALTER TABLE "Fornecedor" ADD COLUMN "uf"           TEXT;
+ALTER TABLE "Fornecedor" ADD COLUMN IF NOT EXISTS "nomeFantasia" TEXT;
+ALTER TABLE "Fornecedor" ADD COLUMN IF NOT EXISTS "municipio"    TEXT;
+ALTER TABLE "Fornecedor" ADD COLUMN IF NOT EXISTS "uf"           TEXT;

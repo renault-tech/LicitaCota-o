@@ -38,8 +38,17 @@ export async function cotarItem(
   const precos: Array<number | null> = [];
   let houveErroFonte = false;
 
-  // Remove cotações anteriores deste item (re-cotação) preservando histórico.
+  // Remove cotações anteriores deste item (re-cotação) preservando as
+  // editadas manualmente pelo servidor responsável.
   await prisma.cotacao.deleteMany({ where: { itemPesquisaId: itemId, editadaManualmente: false } });
+
+  // As cotações manuais preservadas continuam valendo e precisam entrar no
+  // cálculo — do contrário a re-cotação descarta silenciosamente a correção
+  // feita pelo servidor.
+  const manuais = await prisma.cotacao.findMany({
+    where: { itemPesquisaId: itemId, editadaManualmente: true },
+  });
+  for (const m of manuais) if (m.preco != null) precos.push(Number(m.preco));
 
   for (const fonte of fontes) {
     const adapter = adapterPara(fonte.tipo, fonte.slug);

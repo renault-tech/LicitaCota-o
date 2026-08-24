@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { env } from '../../config/env.js';
+import { prisma } from '../../config/prisma.js';
 import { logger } from '../../utils/logger.js';
 import { processarPesquisaDiretamente } from './worker.runner.js';
 
@@ -56,8 +57,14 @@ export async function enfileirarPesquisa(pesquisaId: string, autorId: string): P
     logger.warn('Redis indisponível, processando pesquisa diretamente.', { pesquisaId, erro: String(err) });
     const jobId = `local-${pesquisaId}`;
     setImmediate(() => {
-      processarPesquisaDiretamente(pesquisaId, autorId).catch((e: unknown) => {
-        logger.error('Erro no processamento direto', { pesquisaId, erro: String(e) });
+      processarPesquisaDiretamente(pesquisaId, autorId).catch(async (e: unknown) => {
+        const mensagem = e instanceof Error ? e.message : String(e);
+        logger.error('Erro no processamento direto', { pesquisaId, erro: mensagem });
+        // Sem BullMQ não há handler de 'failed': marca o erro aqui, senão a
+        // pesquisa fica presa em PROCESSANDO e o SSE nunca encerra.
+        await prisma.pesquisa
+          .update({ where: { id: pesquisaId }, data: { status: 'ERRO', erroProcessamento: mensagem } })
+          .catch((err: unknown) => logger.error('Falha ao marcar pesquisa como ERRO', err));
       });
     });
     return jobId;

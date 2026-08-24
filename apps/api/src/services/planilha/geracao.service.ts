@@ -169,7 +169,11 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
           cell.value = traduzStatus(item.statusItem);
           break;
         case 'fundamentacao':
-          cell.value = item.observacao ?? montarFundamentacao(item.cotacoes);
+          // A fundamentação legal é obrigatória no documento; a observação é
+          // complemento e nunca deve substituí-la.
+          cell.value = [montarFundamentacao(item.cotacoes), item.observacao]
+            .filter((t) => t)
+            .join(' — ');
           break;
         default:
           if (d.chave.startsWith('extra:')) {

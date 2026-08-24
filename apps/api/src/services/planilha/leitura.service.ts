@@ -48,10 +48,34 @@ function celulaTexto(valor: ExcelJS.CellValue): string {
   return String(valor).trim();
 }
 
-function celulaNumero(valor: ExcelJS.CellValue): number {
-  const txt = celulaTexto(valor).replace(/\./g, '').replace(',', '.');
-  const n = Number(txt);
+/**
+ * Converte texto numérico em número aceitando tanto o formato pt-BR
+ * ("1.234,56") quanto o formato com ponto decimal ("1234.56").
+ * A vírgula, quando presente, é sempre o separador decimal.
+ */
+export function parseNumeroBr(texto: string): number {
+  const t = (texto ?? '').trim().replace(/\s/g, '');
+  if (!t) return 0;
+  // Com vírgula: pontos são separadores de milhar, vírgula é decimal.
+  // Sem vírgula: o ponto só é separador de milhar se agrupar exatamente 3 dígitos.
+  const limpo = t.includes(',')
+    ? t.replace(/\./g, '').replace(',', '.')
+    : /^-?\d{1,3}(\.\d{3})+$/.test(t)
+      ? t.replace(/\./g, '')
+      : t;
+  const n = Number(limpo);
   return Number.isFinite(n) ? n : 0;
+}
+
+function celulaNumero(valor: ExcelJS.CellValue): number {
+  // Célula numérica do Excel: usa o valor nativo, sem passar por texto
+  // (evita que 120,5 vire 1205 ao remover o ponto decimal).
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+  if (valor && typeof valor === 'object') {
+    const r = (valor as { result?: unknown }).result;
+    if (typeof r === 'number') return Number.isFinite(r) ? r : 0;
+  }
+  return parseNumeroBr(celulaTexto(valor));
 }
 
 /** Detecta a linha de cabeçalho: a primeira linha que contém >= 2 títulos conhecidos. */
@@ -211,10 +235,7 @@ export function lerListaColada(texto: string): ResultadoLeitura {
   const iCidade = idx('cidade');
   const iUf = idx('uf');
 
-  const parseNum = (s: string): number => {
-    const n = Number((s ?? '').replace(/\./g, '').replace(',', '.'));
-    return Number.isFinite(n) ? n : 0;
-  };
+  const parseNum = parseNumeroBr;
 
   const itens: ItemPlanilhaEntrada[] = [];
   let sequencia = 0;

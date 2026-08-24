@@ -51,6 +51,10 @@ pnpm install
 # Configure .env com DATABASE_URL e REDIS_URL apontando para localhost
 cp .env.example .env
 
+# Compile o pacote compartilhado — a API e o seed importam @licitapreco/shared
+# a partir de dist/, então este passo precede qualquer script da API.
+pnpm --filter @licitapreco/shared build
+
 # Gere o Prisma Client e rode as migrations
 pnpm prisma:generate
 pnpm prisma:migrate   # cria o banco e aplica todas as migrations
@@ -63,10 +67,12 @@ pnpm create-admin
 
 # Inicie a API (porta 3001)
 pnpm dev:api
-
-# Em outro terminal, inicie o worker BullMQ
-pnpm --filter @licitapreco/api worker:dev
 ```
+
+> **Worker:** o processo da API já sobe um worker BullMQ ao importar a fila.
+> Subir `pnpm --filter @licitapreco/api worker:dev` em paralelo faz dois
+> workers concorrerem pela mesma fila — use apenas quando a API rodar com o
+> worker desabilitado.
 
 ---
 
@@ -145,7 +151,7 @@ LicitaCota-o/
 | `POST` | `/api/pesquisas/:id/processar` | Enfileira o processamento |
 | `GET` | `/api/pesquisas/:id/progresso` | Stream SSE com progresso em tempo real |
 | `GET` | `/api/pesquisas/:id/resultado/planilha` | Download do banco de preços gerado |
-| `GET` | `/api/fontes` | Lista fontes de cotação |
+| `GET` | `/api/fontes` | Lista fontes de cotação (credenciais e headers só para ADMIN) |
 | `POST` | `/api/fontes/:id/testar` | Testa e valida uma fonte |
 
 ---

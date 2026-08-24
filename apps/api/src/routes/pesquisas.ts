@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
-import { autenticar } from '../middleware/auth.js';
+import { autenticar, exigirRole } from '../middleware/auth.js';
 import { NaoEncontradoError, ProibidoError, ValidacaoError } from '../utils/errors.js';
 import { registrarAuditoria } from '../services/auditoria.service.js';
 import { lerPlanilha, lerListaColada } from '../services/planilha/leitura.service.js';
@@ -10,6 +10,7 @@ import { gerarPlanilha } from '../services/planilha/geracao.service.js';
 import { salvarArquivo } from '../services/storage.service.js';
 import { enfileirarPesquisa, buscarJobPorId } from '../services/queue/pesquisa.queue.js';
 import { progressStore } from '../services/queue/progressStore.js';
+import { recalcularItem } from '../services/cotacao/recalculo.service.js';
 
 const router: Router = Router();
 const upload = multer({
@@ -61,7 +62,7 @@ router.get('/', autenticar, async (req, res, next) => {
 });
 
 // POST /api/pesquisas
-router.post('/', autenticar, async (req, res, next) => {
+router.post('/', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const data = z.object({
       titulo: z.string().min(3).max(200),
@@ -116,7 +117,7 @@ router.get('/:id', autenticar, async (req, res, next) => {
 });
 
 // PUT /api/pesquisas/:id
-router.put('/:id', autenticar, async (req, res, next) => {
+router.put('/:id', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -136,11 +137,12 @@ router.put('/:id', autenticar, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// DELETE /api/pesquisas/:id — somente ADMIN
-router.delete('/:id', autenticar, async (req, res, next) => {
+// DELETE /api/pesquisas/:id — autor da pesquisa ou ADMIN
+router.delete('/:id', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
+    checarAcesso(pesquisa.userId, req.usuario.id, req.usuario.role);
     await prisma.pesquisa.delete({ where: { id: req.params.id } });
     await registrarAuditoria({ userId: req.usuario.id, acao: 'PESQUISA_EXCLUIDA', entidade: 'Pesquisa', entidadeId: req.params.id, detalhe: { titulo: pesquisa.titulo }, ip: req.ip });
     res.json({ ok: true });
@@ -148,7 +150,7 @@ router.delete('/:id', autenticar, async (req, res, next) => {
 });
 
 // POST /api/pesquisas/:id/planilha — upload xlsx → preview (não salva itens ainda)
-router.post('/:id/planilha', autenticar, upload.single('arquivo'), async (req, res, next) => {
+router.post('/:id/planilha', autenticar, exigirRole('ADMIN', 'OPERADOR'), upload.single('arquivo'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -165,7 +167,7 @@ router.post('/:id/planilha', autenticar, upload.single('arquivo'), async (req, r
 });
 
 // POST /api/pesquisas/:id/texto — colar TSV → preview
-router.post('/:id/texto', autenticar, async (req, res, next) => {
+router.post('/:id/texto', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -178,7 +180,7 @@ router.post('/:id/texto', autenticar, async (req, res, next) => {
 });
 
 // POST /api/pesquisas/:id/confirmar — salva itens do preview no banco
-router.post('/:id/confirmar', autenticar, async (req, res, next) => {
+router.post('/:id/confirmar', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -225,7 +227,7 @@ router.post('/:id/confirmar', autenticar, async (req, res, next) => {
 });
 
 // POST /api/pesquisas/:id/reprocessar — reseta itens e reenfileira o processamento
-router.post('/:id/reprocessar', autenticar, async (req, res, next) => {
+router.post('/:id/reprocessar', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({
       where: { id: req.params.id },
@@ -263,7 +265,7 @@ router.post('/:id/reprocessar', autenticar, async (req, res, next) => {
 });
 
 // POST /api/pesquisas/:id/processar — enfileira o processamento
-router.post('/:id/processar', autenticar, async (req, res, next) => {
+router.post('/:id/processar', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({
       where: { id: req.params.id },
@@ -358,7 +360,7 @@ router.get('/:id/resultado/planilha', autenticar, async (req, res, next) => {
 });
 
 // PUT /api/pesquisas/:id/itens/:itemId — editar item manualmente
-router.put('/:id/itens/:itemId', autenticar, async (req, res, next) => {
+router.put('/:id/itens/:itemId', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -395,9 +397,20 @@ router.put('/:id/itens/:itemId', autenticar, async (req, res, next) => {
       }
     }
 
-    const atualizado = await prisma.itemPesquisa.update({
+    // A cotação manual entra no cálculo: reavalia preço de referência,
+    // preço total do item e os totais da pesquisa. Roda antes de gravar a
+    // observação, que é do servidor e não pode ser sobrescrita pelo recálculo.
+    if (data.precoManual !== undefined) await recalcularItem(item.id);
+
+    if (data.observacao !== undefined) {
+      await prisma.itemPesquisa.update({
+        where: { id: item.id },
+        data: { observacao: data.observacao },
+      });
+    }
+
+    const atualizado = await prisma.itemPesquisa.findUnique({
       where: { id: item.id },
-      data: { observacao: data.observacao },
       include: { cotacoes: true },
     });
 
@@ -412,6 +425,9 @@ router.get('/:id/itens/:itemId/cotacoes-diretas', autenticar, async (req, res, n
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
     checarAcesso(pesquisa.userId, req.usuario.id, req.usuario.role);
 
+    const item = await prisma.itemPesquisa.findUnique({ where: { id: req.params.itemId } });
+    if (!item || item.pesquisaId !== req.params.id) throw new NaoEncontradoError('Item não encontrado.');
+
     const cotacoes = await prisma.cotacaoDireta.findMany({
       where: { itemPesquisaId: req.params.itemId },
       include: { fornecedor: true },
@@ -422,7 +438,7 @@ router.get('/:id/itens/:itemId/cotacoes-diretas', autenticar, async (req, res, n
 });
 
 // POST /api/pesquisas/:id/itens/:itemId/cotacoes-diretas
-router.post('/:id/itens/:itemId/cotacoes-diretas', autenticar, async (req, res, next) => {
+router.post('/:id/itens/:itemId/cotacoes-diretas', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -445,7 +461,7 @@ router.post('/:id/itens/:itemId/cotacoes-diretas', autenticar, async (req, res, 
 });
 
 // PUT /api/pesquisas/:id/itens/:itemId/cotacoes-diretas/:cotacaoId
-router.put('/:id/itens/:itemId/cotacoes-diretas/:cotacaoId', autenticar, async (req, res, next) => {
+router.put('/:id/itens/:itemId/cotacoes-diretas/:cotacaoId', autenticar, exigirRole('ADMIN', 'OPERADOR'), async (req, res, next) => {
   try {
     const pesquisa = await prisma.pesquisa.findUnique({ where: { id: req.params.id } });
     if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -457,11 +473,23 @@ router.put('/:id/itens/:itemId/cotacoes-diretas/:cotacaoId', autenticar, async (
       outlier: z.boolean().optional(),
     }).parse(req.body);
 
+    const item = await prisma.itemPesquisa.findUnique({ where: { id: req.params.itemId } });
+    if (!item || item.pesquisaId !== req.params.id) throw new NaoEncontradoError('Item não encontrado.');
+
+    const existente = await prisma.cotacaoDireta.findUnique({ where: { id: req.params.cotacaoId } });
+    if (!existente || existente.itemPesquisaId !== item.id) {
+      throw new NaoEncontradoError('Cotação direta não encontrada.');
+    }
+
     const cotacao = await prisma.cotacaoDireta.update({
       where: { id: req.params.cotacaoId },
       data: { ...data, dataResposta: data.preco !== undefined || data.status === 'RECUSADA' ? new Date() : undefined },
       include: { fornecedor: true },
     });
+
+    // Cotações diretas respondidas compõem o preço de referência.
+    await recalcularItem(item.id);
+
     res.json(cotacao);
   } catch (e) { next(e); }
 });

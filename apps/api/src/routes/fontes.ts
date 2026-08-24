@@ -31,14 +31,27 @@ function jsonField(v: Record<string, string> | undefined): Prisma.InputJsonValue
   return v !== undefined ? (v as Prisma.InputJsonValue) : undefined;
 }
 
+/**
+ * Remove campos sensíveis (credenciais e headers, que podem conter chaves de
+ * API) da resposta para quem não é ADMIN.
+ */
+function ocultarSegredos<T extends { credencialCifrada?: unknown; headers?: unknown }>(
+  fonte: T,
+  role: string,
+): T {
+  if (role === 'ADMIN') return fonte;
+  const { credencialCifrada: _c, headers: _h, ...resto } = fonte;
+  return resto as T;
+}
+
 // GET /api/fontes
-router.get('/', autenticar, async (_req, res, next) => {
+router.get('/', autenticar, async (req, res, next) => {
   try {
     const fontes = await prisma.fonteCotacao.findMany({
       orderBy: [{ ordem: 'asc' }, { nome: 'asc' }],
       include: { criadoPor: { select: { id: true, nome: true } } },
     });
-    res.json(fontes);
+    res.json(fontes.map((f) => ocultarSegredos(f, req.usuario.role)));
   } catch (e) { next(e); }
 });
 
@@ -50,7 +63,7 @@ router.get('/:id', autenticar, async (req, res, next) => {
       include: { criadoPor: { select: { id: true, nome: true } }, tabelaReferencia: { take: 10 } },
     });
     if (!fonte) throw new NaoEncontradoError('Fonte não encontrada.');
-    res.json(fonte);
+    res.json(ocultarSegredos(fonte, req.usuario.role));
   } catch (e) { next(e); }
 });
 

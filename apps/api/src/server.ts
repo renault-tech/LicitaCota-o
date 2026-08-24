@@ -17,14 +17,16 @@ const origensPermitidas = [
   'http://localhost:3001',
 ].filter(Boolean);
 
+// Previews da Vercel só são liberadas fora de produção: em produção
+// `*.vercel.app` liberaria qualquer site hospedado na Vercel.
+const permitirPreviewsVercel = env.NODE_ENV !== 'production';
+
 app.use(cors({
   origin: (origin, cb) => {
     // Permite requisições sem origin (Postman, mobile, SSR server-side)
     if (!origin) return cb(null, true);
-    // Permite qualquer subdomínio Vercel do projeto
-    if (origin.endsWith('.vercel.app') || origensPermitidas.includes(origin)) {
-      return cb(null, true);
-    }
+    if (origensPermitidas.includes(origin)) return cb(null, true);
+    if (permitirPreviewsVercel && origin.endsWith('.vercel.app')) return cb(null, true);
     cb(new Error(`CORS: origem não permitida — ${origin}`));
   },
   credentials: true,
@@ -44,6 +46,17 @@ app.use(rateLimit({
 }));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// Limite estrito nas rotas de credencial — o limite global de 300/min é
+// permissivo demais para tentativa de senha e disparo de e-mail de reset.
+app.use(['/api/auth/login', '/api/auth/cadastro', '/api/auth/esqueci-senha', '/api/auth/redefinir-senha', '/api/auth/definir-senha'], rateLimit({
+  windowMs: 15 * 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { erro: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.', codigo: 'RATE_LIMIT' },
+}));
 
 registrarRotas(app);
 
