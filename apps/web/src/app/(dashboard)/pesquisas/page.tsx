@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, FileSearch } from 'lucide-react';
 import { usePesquisas } from '@/lib/queries';
 import PesquisaCard from '@/components/pesquisas/PesquisaCard';
@@ -60,14 +60,12 @@ export default function PesquisasPage() {
 
       {/* Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="card animate-pulse h-44">
-              <div className="h-4 bg-zinc-200 dark:bg-zinc-700 rounded-full w-3/4 mb-3" />
-              <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded-full w-1/2 mb-4" />
-              <div className="grid grid-cols-3 gap-2">
-                {[0, 1, 2].map((j) => <div key={j} className="h-14 bg-zinc-100 dark:bg-zinc-800 rounded-xl" />)}
-              </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="card p-3.5 animate-pulse h-28">
+              <div className="h-3.5 bg-zinc-200 dark:bg-zinc-700 rounded-full w-3/4 mb-3" />
+              <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded-full w-1/2 mb-3" />
+              <div className="h-3 bg-zinc-100 dark:bg-zinc-800 rounded-full w-2/3" />
             </div>
           ))}
         </div>
@@ -84,10 +82,12 @@ export default function PesquisasPage() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-            {data.pesquisas.map((p, i) => (
-              <PesquisaCard key={p.id} pesquisa={p} index={i} />
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+            <AnimatePresence mode="popLayout">
+              {data.pesquisas.map((p, i) => (
+                <PesquisaCard key={p.id} pesquisa={p} index={i} />
+              ))}
+            </AnimatePresence>
           </div>
 
           {/* Pagination */}
