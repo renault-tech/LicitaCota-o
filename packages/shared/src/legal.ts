@@ -30,4 +30,6 @@ export const FUNDAMENTACAO_ARTIGO = {
 export const MENSAGENS_STATUS = {
   pesquisaIncompleta: 'Pesquisa incompleta - IN 65/2021, art. 7º',
   pesquisaManualNecessaria: 'Pesquisa manual necessária - IN 65/2021, art. 5º',
+  aguardandoFornecedor:
+    'Fontes automáticas não atingiram o mínimo de cotações — solicitação enviada a fornecedores nos termos do art. 5º, incisos II e III, da IN SEGES/ME 65/2021.',
 } as const;

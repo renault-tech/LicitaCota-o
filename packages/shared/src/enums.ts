@@ -22,6 +22,8 @@ export type StatusPesquisa = (typeof StatusPesquisa)[keyof typeof StatusPesquisa
 export const StatusItem = {
   PENDENTE: 'PENDENTE',
   COTADO: 'COTADO',
+  /** Fontes automáticas esgotadas; cotação direta com fornecedores foi disparada e aguarda resposta. */
+  AGUARDANDO_FORNECEDOR: 'AGUARDANDO_FORNECEDOR',
   SEM_RESULTADO: 'SEM_RESULTADO',
   ERRO: 'ERRO',
 } as const;

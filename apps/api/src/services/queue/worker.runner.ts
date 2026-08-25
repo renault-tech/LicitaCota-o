@@ -89,6 +89,7 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
   let itensComCotacao = 0;
   let itensSemCotacao = 0;
   let itensComErro = 0;
+  let itensAguardandoFornecedor = 0;
   let valorTotal = 0;
 
   // Processa itens em paralelo com janela de concorrência controlada.
@@ -111,12 +112,17 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
       municipio: pesquisaAtual.municipio ?? item.cidade,
       uf: pesquisaAtual.uf ?? item.uf,
       pesquisaId,
+      pesquisaTitulo: pesquisaAtual.titulo,
       autorId,
     });
 
     processados++;
     if (resultado.statusItem === 'COTADO') {
       itensComCotacao++;
+      valorTotal += resultado.precoTotal ?? 0;
+    } else if (resultado.statusItem === 'AGUARDANDO_FORNECEDOR') {
+      itensAguardandoFornecedor++;
+      // Contabiliza também no total, se já houver preço parcial disponível.
       valorTotal += resultado.precoTotal ?? 0;
     } else if (resultado.statusItem === 'SEM_RESULTADO') {
       itensSemCotacao++;
@@ -132,6 +138,7 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
       itensComCotacao,
       itensSemCotacao,
       itensComErro,
+      itensAguardandoFornecedor,
       itemAtual: { sequencia: item.sequencia, nome: item.nome, statusItem: resultado.statusItem },
       tempoEstimadoSegundos:
         processados > 0
@@ -153,8 +160,10 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
   }
   await Promise.all(semaphore);
 
-  // Estatísticas finais.
-  const cobertura = `${totalItens} itens | ${itensComCotacao} cotados | ${itensSemCotacao} sem resultado | ${itensComErro} com erro`;
+  // Estatísticas finais. Itens aguardando fornecedor contam como "sem
+  // resultado (ainda)" no resumo agregado; o status por item é preciso.
+  const itensSemCotacaoTotal = itensSemCotacao + itensAguardandoFornecedor;
+  const cobertura = `${totalItens} itens | ${itensComCotacao} cotados | ${itensSemCotacaoTotal} sem resultado | ${itensComErro} com erro`;
   const concluidaEm = new Date();
 
   // Gera planilha de saída.
@@ -174,7 +183,7 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
       status: 'CONCLUIDA',
       totalItens,
       itensComCotacao,
-      itensSemCotacao,
+      itensSemCotacao: itensSemCotacaoTotal,
       itensComErro,
       resumoCobertura: cobertura,
       valorTotalEstimado: valorTotal > 0 ? valorTotal : null,
@@ -197,10 +206,10 @@ async function processarPesquisa(pesquisaId: string, autorId: string, onProgress
     acao: 'PESQUISA_CONCLUIDA',
     entidade: 'Pesquisa',
     entidadeId: pesquisaId,
-    detalhe: { totalItens, itensComCotacao, itensSemCotacao, itensComErro, duracaoMs: Date.now() - inicio },
+    detalhe: { totalItens, itensComCotacao, itensSemCotacao: itensSemCotacaoTotal, itensComErro, itensAguardandoFornecedor, duracaoMs: Date.now() - inicio },
   });
 
-  logger.info('Pesquisa concluída', { pesquisaId, itensComCotacao, itensSemCotacao, itensComErro, duracaoMs: Date.now() - inicio });
+  logger.info('Pesquisa concluída', { pesquisaId, itensComCotacao, itensSemCotacao: itensSemCotacaoTotal, itensComErro, itensAguardandoFornecedor, duracaoMs: Date.now() - inicio });
 }
 
 async function tratarErro(job: Job<PesquisaJobData>, err: Error): Promise<void> {

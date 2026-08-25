@@ -58,16 +58,35 @@ async function seedFontes(): Promise<void> {
       fundamentacaoArtigo: 'Art. 82 da Lei 14.133/2021 — Atas de Registro de Preço publicadas no PNCP',
       limiteResultados: 5,
     },
+    {
+      slug: 'compras-gov',
+      nome: 'Compras.gov.br — Painel de Preços',
+      tipo: 'API_REST' as const,
+      ordem: 3,
+      endpointBase: 'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco/1_consultarMaterial',
+      metodoHttp: 'GET',
+      parametrosTemplate: {},
+      headers: {},
+      mapeamentoCampos: {},
+      fundamentacaoArtigo: FUNDAMENTACAO_ARTIGO.comprasGov,
+      limiteResultados: 5,
+    },
   ];
 
   for (const f of fontes) {
+    // Só cria a fonte se ela ainda não existir; NUNCA sobrescreve ativo/
+    // statusValidacao de uma fonte já existente. Toda fonte nasce inativa e
+    // NAO_TESTADA — sai desse estado apenas pelo botão "Testar fonte" no
+    // painel, que efetivamente valida contra a API real antes de habilitar.
+    // Um seed que force ativo=true sem rodar o auto-teste violaria a própria
+    // regra de ouro do sistema (nenhuma fonte entra no fluxo sem validação).
     await prisma.fonteCotacao.upsert({
       where: { slug: f.slug },
-      update: { ativo: true, statusValidacao: 'VALIDA' },
+      update: {},
       create: {
         ...f,
-        ativo: true,
-        statusValidacao: 'VALIDA',
+        ativo: false,
+        statusValidacao: 'NAO_TESTADA',
         timeoutMs: 30000,
         pausaMs: 500,
         retries: 1,
@@ -77,7 +96,7 @@ async function seedFontes(): Promise<void> {
 
   // Remove fontes que não funcionam mais
   await prisma.fonteCotacao.deleteMany({
-    where: { slug: { notIn: ['pncp', 'pncp-atas'] } },
+    where: { slug: { notIn: ['pncp', 'pncp-atas', 'compras-gov'] } },
   });
 }
 

@@ -2,7 +2,7 @@
 
 Sistema web de **pesquisa de preços para licitações** conforme a Lei Federal nº 14.133/2021 e a IN SEGES/ME nº 65/2021.
 
-Automatiza a coleta de cotações em múltiplas fontes (APIs públicas, scrapers, tabelas de referência e cotações diretas com fornecedores), calcula o preço de referência com remoção de outliers e gera a planilha formal de banco de preços com a metodologia legal exigida.
+Automatiza a coleta de cotações em múltiplas fontes oficiais (PNCP, Compras.gov.br, tabelas de referência) e, quando as fontes automáticas não atingem o mínimo de cotações exigido, dispara sozinho a cotação direta com fornecedores — o agente não precisa procurar preço na internet nem ligar atrás de fornecedor, só revisar o resultado. Calcula o preço de referência com remoção de outliers (com justificativa auditável) e gera a planilha formal de banco de preços com a metodologia legal exigida.
 
 ---
 
@@ -153,6 +153,40 @@ LicitaCota-o/
 | `GET` | `/api/pesquisas/:id/resultado/planilha` | Download do banco de preços gerado |
 | `GET` | `/api/fontes` | Lista fontes de cotação (credenciais e headers só para ADMIN) |
 | `POST` | `/api/fontes/:id/testar` | Testa e valida uma fonte |
+| `GET` | `/api/cotar/:token` | **Pública** — fornecedor visualiza a solicitação de cotação direta |
+| `POST` | `/api/cotar/:token` | **Pública** — fornecedor informa o preço (ou recusa) |
+
+---
+
+## Motor de cotação: como funciona de ponta a ponta
+
+1. **Fontes automáticas.** Cada fonte (`FonteAdapter` em `services/cotacao/`) devolve
+   **vários pontos de preço distintos** para o item, não uma média pré-calculada — um
+   PNCP com 3 contratos comparáveis já satisfaz, sozinho, o mínimo de cotações do
+   art. 23 da Lei 14.133/2021. Uma fonte que falha por rede/HTTP é registrada como
+   **erro da fonte**, nunca confundida com "sem preço no mercado".
+2. **Fontes seguidas:**
+   - `pncp` — PNCP, contratações publicadas (varre e casa por descrição — a API não
+     tem busca textual nativa por item).
+   - `pncp-atas` — PNCP, Atas de Registro de Preço (preço homologado, vigência longa).
+   - `compras-gov` — Compras.gov.br / Painel de Preços, busca textual de item de
+     verdade (a fonte que a IN 65/2021 cita em primeiro lugar).
+   - `tabela-referencia` — qualquer tabela oficial importada por planilha (ex.: SINAPI).
+3. **Cálculo.** Todos os pontos de todas as fontes + cotações manuais preservadas +
+   cotações diretas respondidas entram juntos no cálculo (`services/cotacao/calculo.ts`).
+   Outliers descartados ficam registrados em `ItemPesquisa.precosDescartados` com a
+   referência de origem e o motivo — vai para a aba Metodologia da planilha.
+4. **Fallback automático.** Se o mínimo de cotações não for atingido, o sistema
+   seleciona até 3 fornecedores ativos (priorizando por `categorias` cadastradas),
+   cria as solicitações e envia o e-mail sozinho, com um link público
+   (`/cotar/:token`, sem login) para o fornecedor responder. O item fica
+   `AGUARDANDO_FORNECEDOR` até a resposta fechar o mínimo.
+
+> **Antes de ativar `compras-gov` em produção:** o contrato exato do endpoint do
+> Portal de Dados Abertos foi implementado a partir da documentação pública, mas não
+> pôde ser testado contra a API real neste repositório (ambiente de desenvolvimento
+> sem acesso à internet). Use o botão **Testar fonte** — a regra de ouro do sistema
+> já impede qualquer fonte de entrar no fluxo sem passar nesse teste primeiro.
 
 ---
 

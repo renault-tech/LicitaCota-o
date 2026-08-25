@@ -20,7 +20,36 @@ export interface ItemNormalizado {
   uf?: string;
 }
 
-/** Resultado de uma consulta de cotação a uma fonte. */
+/**
+ * Um preço encontrado por uma fonte automática, com sua própria referência.
+ * Uma fonte pode devolver vários pontos (ex.: 3 contratos distintos do PNCP)
+ * — cada um vira uma cotação própria no banco, entrando individualmente no
+ * cálculo do preço de referência e no descarte de outliers. Não é permitido
+ * que o adapter agregue múltiplos preços em um só antes de devolver: isso
+ * mascararia a dispersão real e violaria o mínimo de fontes/cotações exigido
+ * pelo art. 23 da Lei 14.133/2021.
+ */
+export interface PontoPreco {
+  preco: number;
+  referencia: string;
+  fundamentacaoArtigo: string;
+  dadosBrutos?: unknown;
+}
+
+/**
+ * Resultado de uma consulta de cotação a uma fonte automática.
+ * `erro` presente = a fonte falhou (rede, HTTP, formato de resposta) e não
+ * pôde ser consultada; distinto de `pontos: []` sem erro, que significa que
+ * a fonte respondeu normalmente e não encontrou nenhum preço para o item.
+ * Essa distinção é o que evita reportar "sem preço no mercado" quando na
+ * verdade a fonte estava fora do ar.
+ */
+export interface ResultadoConsultaFonte {
+  pontos: PontoPreco[];
+  erro?: string;
+}
+
+/** @deprecated use ResultadoConsultaFonte — mantido apenas para o adapter de tabela de referência em transição. */
 export interface ResultadoCotacao {
   preco: number | null;
   referencia: string;
@@ -104,6 +133,7 @@ export interface ProgressoPesquisa {
   itensComCotacao: number;
   itensSemCotacao: number;
   itensComErro: number;
+  itensAguardandoFornecedor: number;
   itemAtual?: { sequencia: number; nome: string; statusItem: StatusItem };
   tempoEstimadoSegundos?: number;
 }
@@ -126,6 +156,13 @@ export interface ParametrosCalculo {
   metodoCalculo: MetodoCalculo;
   limiteOutlierPercentual: number;
   minFontesCompleta: number;
+}
+
+/** Um preço descartado do cálculo por ser outlier, com a justificativa exigida para auditoria. */
+export interface PrecoDescartado {
+  preco: number;
+  referencia: string;
+  motivo: string;
 }
 
 /** Diagnóstico resumido de saúde de uma fonte. */

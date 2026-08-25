@@ -2,12 +2,14 @@ import type { FonteCotacao } from '@prisma/client';
 import { prisma } from '../../config/prisma.js';
 import { pncpAdapter } from './pncp.adapter.js';
 import { pncpAtasAdapter } from './pncpAtas.adapter.js';
+import { comprasGovAdapter } from './comprasGov.adapter.js';
 import { tabelaReferenciaAdapter } from './tabelaReferencia.adapter.js';
 import type { FonteAdapter } from './adapter.js';
 
 const ADAPTERS_POR_SLUG: Record<string, FonteAdapter> = {
   'pncp': pncpAdapter,
   'pncp-atas': pncpAtasAdapter,
+  'compras-gov': comprasGovAdapter,
 };
 
 export function adapterPara(tipo: FonteCotacao['tipo'], slug?: string): FonteAdapter {

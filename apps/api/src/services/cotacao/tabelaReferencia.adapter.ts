@@ -1,77 +1,51 @@
 import type { FonteCotacao } from '@prisma/client';
-import type { ItemNormalizado, ResultadoCotacao, TesteResultado } from '@licitapreco/shared';
+import type { ItemNormalizado, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { prisma } from '../../config/prisma.js';
 import { normalizarChave } from '../../utils/texto.js';
+import { melhorCorrespondencia } from '../../utils/matching.js';
 import type { FonteAdapter } from './adapter.js';
 
 /**
- * Adapter para fontes do tipo TABELA_REFERENCIA: consulta as linhas importadas
- * (TabelaReferenciaItem) por correspondência de descrição normalizada.
- * Útil para tabelas oficiais de órgãos estaduais/municipais.
+ * Adapter para fontes do tipo TABELA_REFERENCIA: consulta linhas importadas
+ * (TabelaReferenciaItem, ex.: planilha SINAPI/SICRO ou tabela de órgão
+ * estadual) por correspondência de descrição. Só devolve um ponto (a linha
+ * mais próxima) porque uma tabela de referência representa um único preço
+ * oficial por item, não várias fontes independentes.
  */
-
-function pontuarCorrespondencia(busca: string, candidato: string): number {
-  const tokensBusca = new Set(busca.split(' ').filter(Boolean));
-  const tokensCand = new Set(candidato.split(' ').filter(Boolean));
-  if (tokensBusca.size === 0) return 0;
-  let comuns = 0;
-  for (const t of tokensBusca) if (tokensCand.has(t)) comuns++;
-  return comuns / tokensBusca.size;
-}
 
 async function melhorLinha(
   fonteId: string,
-  termos: string[],
+  item: ItemNormalizado,
 ): Promise<{ preco: number; referencia: string } | null> {
   const linhas = await prisma.tabelaReferenciaItem.findMany({ where: { fonteId } });
   if (linhas.length === 0) return null;
 
-  let melhor: { preco: number; referencia: string; score: number } | null = null;
-  for (const termo of termos) {
+  for (const termo of item.cascata) {
     const buscaNorm = normalizarChave(termo);
-    for (const l of linhas) {
-      const score = pontuarCorrespondencia(buscaNorm, l.descricaoNorm);
-      if (score >= 0.6 && (!melhor || score > melhor.score)) {
-        melhor = {
-          preco: Number(l.preco),
-          referencia: l.referencia ?? l.descricao,
-          score,
-        };
-      }
+    const melhor = melhorCorrespondencia(buscaNorm, linhas, (l) => l.descricaoNorm);
+    if (melhor) {
+      return { preco: Number(melhor.item.preco), referencia: melhor.item.referencia ?? melhor.item.descricao };
     }
-    if (melhor) break; // achou na variação mais completa
   }
-  return melhor ? { preco: melhor.preco, referencia: melhor.referencia } : null;
+  return null;
 }
 
 export const tabelaReferenciaAdapter: FonteAdapter = {
   slug: 'tabela-referencia',
 
-  async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoCotacao> {
+  async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoConsultaFonte> {
     try {
-      const achado = await melhorLinha(config.id, item.cascata);
-      if (achado && achado.preco > 0) {
-        return {
-          preco: achado.preco,
-          referencia: `${config.nome} - ${achado.referencia}`,
-          fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
-          dadosBrutos: achado,
-        };
-      }
+      const achado = await melhorLinha(config.id, item);
+      if (!achado || achado.preco <= 0) return { pontos: [] };
       return {
-        preco: null,
-        referencia: '',
-        fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
-        dadosBrutos: { cascataTentada: item.cascata },
+        pontos: [{
+          preco: achado.preco,
+          referencia: `${config.nome} — ${achado.referencia}`,
+          fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
+        }],
       };
     } catch (e) {
-      return {
-        preco: null,
-        referencia: '',
-        fundamentacaoArtigo: config.fundamentacaoArtigo ?? '',
-        dadosBrutos: null,
-        erro: e instanceof Error ? e.message : 'Erro ao consultar a tabela de referência.',
-      };
+      return { pontos: [], erro: e instanceof Error ? e.message : 'Erro ao consultar a tabela de referência.' };
     }
   },
 
@@ -89,7 +63,15 @@ export const tabelaReferenciaAdapter: FonteAdapter = {
           dadosBrutos: { total },
         };
       }
-      const achado = await melhorLinha(config.id, [itemAmostra]);
+      const itemAmostraNormalizado: ItemNormalizado = {
+        nome: itemAmostra,
+        descricao: itemAmostra,
+        descricaoNormalizada: normalizarChave(itemAmostra),
+        cascata: [normalizarChave(itemAmostra)],
+        quantidade: 1,
+        unidadeMedida: '',
+      };
+      const achado = await melhorLinha(config.id, itemAmostraNormalizado);
       const latenciaMs = Date.now() - inicio;
       if (!achado) {
         return {

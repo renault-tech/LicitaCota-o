@@ -8,6 +8,7 @@ import notificacoesRouter from './notificacoes.js';
 import fornecedoresRouter from './fornecedores.js';
 import auditoriaRouter from './auditoria.js';
 import debugRouter from './debug.js';
+import cotacaoPublicaRouter from './cotacaoPublica.js';
 
 export function registrarRotas(app: Express): void {
   app.use('/api/auth', authRouter);
@@ -19,6 +20,7 @@ export function registrarRotas(app: Express): void {
   app.use('/api/fornecedores', fornecedoresRouter);
   app.use('/api/auditoria', auditoriaRouter);
   app.use('/api/debug', debugRouter);
+  app.use('/api/cotar', cotacaoPublicaRouter);
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });

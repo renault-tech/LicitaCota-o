@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { toast } from 'sonner';
-import { useFornecedores } from '@/lib/queries';
+import { useFornecedores, useCreateFornecedor } from '@/lib/queries';
 import EmptyState from '@/components/common/EmptyState';
 import { formatDate, cn } from '@/lib/utils';
 
@@ -21,6 +21,12 @@ const schema = z.object({
 });
 type Form = z.infer<typeof schema>;
 
+/** Categorias usadas para pré-selecionar o fornecedor na cotação direta automática. */
+const CATEGORIAS_SUGERIDAS = [
+  'Material de escritório', 'Informática', 'Limpeza e higiene', 'Mobiliário',
+  'Manutenção e obras', 'Combustível', 'Saúde e medicamentos', 'Alimentação',
+];
+
 function formatCNPJ(value: string) {
   const digits = value.replace(/\D/g, '').slice(0, 14);
   if (digits.length <= 2) return digits;
@@ -32,13 +38,25 @@ function formatCNPJ(value: string) {
 
 export default function FornecedoresPage() {
   const { data, isLoading } = useFornecedores();
+  const criarFornecedor = useCreateFornecedor();
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [cnpjDisplay, setCnpjDisplay] = useState('');
+  const [categorias, setCategorias] = useState<string[]>([]);
+  const [categoriaInput, setCategoriaInput] = useState('');
 
   const { register, handleSubmit, reset, setValue, formState: { errors, isSubmitting } } = useForm<Form>({
     resolver: zodResolver(schema),
   });
+
+  function adicionarCategoria(c: string) {
+    const v = c.trim();
+    if (v && !categorias.includes(v)) setCategorias((prev) => [...prev, v]);
+    setCategoriaInput('');
+  }
+  function removerCategoria(c: string) {
+    setCategorias((prev) => prev.filter((x) => x !== c));
+  }
 
   const filtered = useMemo(() => {
     if (!data?.fornecedores) return [];
@@ -52,11 +70,17 @@ export default function FornecedoresPage() {
     );
   }, [data, search]);
 
-  async function onSubmit(_values: Form) {
+  async function onSubmit(values: Form) {
     try {
+      await criarFornecedor.mutateAsync({
+        ...values,
+        email: values.email || undefined,
+        categorias,
+      });
       toast.success('Fornecedor cadastrado com sucesso');
       reset();
       setCnpjDisplay('');
+      setCategorias([]);
       setModalOpen(false);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Erro ao cadastrar fornecedor');
@@ -67,6 +91,8 @@ export default function FornecedoresPage() {
     setModalOpen(false);
     reset();
     setCnpjDisplay('');
+    setCategorias([]);
+    setCategoriaInput('');
   }
 
   return (
@@ -190,11 +216,45 @@ export default function FornecedoresPage() {
                     <label className="label">Nome fantasia</label>
                     <input {...register('nomeFantasia')} className="input" placeholder="Opcional" />
                   </div>
+                  <div>
+                    <label className="label">Categorias</label>
+                    <p className="text-xs text-zinc-400 mb-1.5">Usadas para pré-selecionar este fornecedor quando a cotação direta é disparada automaticamente.</p>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {categorias.map((c) => (
+                        <span key={c} className="inline-flex items-center gap-1 text-xs bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 px-2 py-1 rounded-full">
+                          {c}
+                          <button type="button" onClick={() => removerCategoria(c)} className="hover:opacity-60"><X className="w-3 h-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                    <input
+                      value={categoriaInput}
+                      onChange={(e) => setCategoriaInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); adicionarCategoria(categoriaInput); }
+                      }}
+                      className="input"
+                      placeholder="Digite e pressione Enter…"
+                    />
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {CATEGORIAS_SUGERIDAS.filter((c) => !categorias.includes(c)).map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => adicionarCategoria(c)}
+                          className="text-xs text-zinc-500 border border-zinc-200 dark:border-zinc-700 px-2 py-0.5 rounded-full hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                        >
+                          + {c}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="label">E-mail</label>
                       <input {...register('email')} type="email" className="input" placeholder="contato@empresa.com" />
                       {errors.email && <p className="mt-1 text-xs text-red-500">{errors.email.message}</p>}
+                      <p className="mt-1 text-xs text-zinc-400">Sem e-mail, este fornecedor não recebe solicitações automáticas.</p>
                     </div>
                     <div>
                       <label className="label">Telefone</label>

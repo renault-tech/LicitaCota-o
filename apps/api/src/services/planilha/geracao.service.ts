@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { TEXTOS_LEGAIS } from '@licitapreco/shared';
+import { TEXTOS_LEGAIS, FUNDAMENTACAO_ARTIGO } from '@licitapreco/shared';
 import { prisma } from '../../config/prisma.js';
 import { NaoEncontradoError } from '../../utils/errors.js';
 
@@ -38,7 +38,10 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
   const pesquisa = await prisma.pesquisa.findUnique({
     where: { id: pesquisaId },
     include: {
-      itens: { orderBy: { sequencia: 'asc' }, include: { cotacoes: true } },
+      itens: {
+        orderBy: { sequencia: 'asc' },
+        include: { cotacoes: true, cotacoesDiretas: { include: { fornecedor: { select: { razaoSocial: true } } } } },
+      },
     },
   });
   if (!pesquisa) throw new NaoEncontradoError('Pesquisa não encontrada.');
@@ -50,6 +53,13 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
   for (const item of pesquisa.itens) {
     for (const c of item.cotacoes) slugsParticipantes.add(c.fonte);
   }
+  // Cotação direta (fornecedores) é uma fonte por si só, distinta de
+  // "manual" (edição pontual do servidor) — precisa da própria linha em
+  // "Fontes Consultadas", senão a metodologia fica muda justamente quando o
+  // preço vem inteiramente do fallback automático de fornecedores.
+  const houveCotacaoDireta = pesquisa.itens.some((item) =>
+    item.cotacoesDiretas.some((d) => d.status === 'RESPONDIDA' && !d.outlier),
+  );
   const fontes = await prisma.fonteCotacao.findMany({
     where: { slug: { in: [...slugsParticipantes] } },
     orderBy: { ordem: 'asc' },
@@ -100,6 +110,10 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
     defs.push({ titulo: `Cotação - ${f.nome}`, largura: 16, tipo: 'fonte-preco', corPar: a, chave: `cot:${f.slug}` });
     defs.push({ titulo: `Referência - ${f.nome}`, largura: 30, tipo: 'fonte-ref', corPar: b, chave: `ref:${f.slug}` });
   });
+  const houveCotacaoDiretaGlobal = pesquisa.itens.some((item) => item.cotacoesDiretas.length > 0);
+  if (houveCotacaoDiretaGlobal) {
+    defs.push({ titulo: 'Cotação Direta — Fornecedores', largura: 50, tipo: 'fonte-ref', chave: 'cotacoesDiretas' });
+  }
   defs.push({ titulo: 'Preço de Referência Unit.', largura: 18, tipo: 'fechamento-valor', chave: 'precoRef' });
   defs.push({ titulo: 'Preço Total Estimado', largura: 18, tipo: 'fechamento-valor', chave: 'precoTotal' });
   defs.push({ titulo: 'Status', largura: 16, tipo: 'fechamento-texto', chave: 'status' });
@@ -168,12 +182,31 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
         case 'status':
           cell.value = traduzStatus(item.statusItem);
           break;
-        case 'fundamentacao':
+        case 'fundamentacao': {
           // A fundamentação legal é obrigatória no documento; a observação é
-          // complemento e nunca deve substituí-la.
-          cell.value = [montarFundamentacao(item.cotacoes), item.observacao]
+          // complemento e nunca deve substituí-la. Cotação direta tem sua
+          // própria base legal, distinta da das fontes automáticas — sem
+          // isso a célula fica vazia justamente quando o preço vem inteiro
+          // do fallback de fornecedores.
+          const houveDiretaRespondida = item.cotacoesDiretas.some((d) => d.status === 'RESPONDIDA' && !d.outlier);
+          cell.value = [
+            montarFundamentacao(item.cotacoes),
+            houveDiretaRespondida ? FUNDAMENTACAO_ARTIGO.cotacaoDireta : '',
+            item.observacao,
+          ]
             .filter((t) => t)
             .join(' — ');
+          break;
+        }
+        case 'cotacoesDiretas':
+          cell.value = item.cotacoesDiretas
+            .filter((d) => d.status !== 'ENVIADA')
+            .map((d) => {
+              if (d.status === 'RECUSADA') return `${d.fornecedor.razaoSocial}: recusou cotar`;
+              const preco = d.preco ? `R$ ${Number(d.preco).toFixed(2)}` : '—';
+              return `${d.fornecedor.razaoSocial}: ${preco}${d.outlier ? ' (descartado — outlier)' : ''}`;
+            })
+            .join(' | ');
           break;
         default:
           if (d.chave.startsWith('extra:')) {
@@ -266,6 +299,9 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
   if (slugsParticipantes.has('manual')) {
     linhasMetodologia.push({ texto: `• Cotação Manual: registrada por servidor responsável com justificativa.` });
   }
+  if (houveCotacaoDireta) {
+    linhasMetodologia.push({ texto: `• Cotação Direta com Fornecedores: ${FUNDAMENTACAO_ARTIGO.cotacaoDireta}.` });
+  }
 
   linhasMetodologia.push({ texto: '' });
   linhasMetodologia.push({ texto: '4. DECLARAÇÃO DE COBERTURA', titulo: true });
@@ -274,6 +310,26 @@ export async function gerarPlanilha(pesquisaId: string): Promise<Buffer> {
       pesquisa.resumoCobertura ??
       `${pesquisa.totalItens} itens processados | ${pesquisa.itensComCotacao} cotados | ${pesquisa.itensSemCotacao} sem resultado | ${pesquisa.itensComErro} com erro`,
   });
+
+  // Rastro auditável do descarte de outliers: cada preço excluído do
+  // cálculo, com a referência de origem e a justificativa — exigência
+  // prática de auditoria (TCU), não apenas o valor numérico do resultado.
+  const itensComDescarte = pesquisa.itens.filter(
+    (i) => Array.isArray(i.precosDescartados) && i.precosDescartados.length > 0,
+  );
+  if (itensComDescarte.length > 0) {
+    linhasMetodologia.push({ texto: '' });
+    linhasMetodologia.push({ texto: '5. PREÇOS DESCARTADOS POR DISPERSÃO (OUTLIERS)', titulo: true });
+    for (const item of itensComDescarte) {
+      const descartes = item.precosDescartados as Array<{ preco: number; referencia: string; motivo: string }>;
+      for (const d of descartes) {
+        const ref = d.referencia ? ` — ${d.referencia}` : '';
+        linhasMetodologia.push({
+          texto: `• ${item.nome}: R$ ${Number(d.preco).toFixed(2)}${ref}. ${d.motivo}`,
+        });
+      }
+    }
+  }
 
   let lm = 1;
   for (const l of linhasMetodologia) {
@@ -307,6 +363,7 @@ function cellRef(col: number, row: number): string {
 function traduzStatus(status: string): string {
   const mapa: Record<string, string> = {
     COTADO: 'Cotado',
+    AGUARDANDO_FORNECEDOR: 'Aguardando fornecedor',
     SEM_RESULTADO: 'Sem resultado',
     ERRO: 'Erro',
     PENDENTE: 'Pendente',

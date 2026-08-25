@@ -31,6 +31,8 @@ enum StatusPesquisa {
 enum StatusItem {
   PENDENTE
   COTADO
+  // Fontes automáticas esgotadas; cotação direta disparada, aguardando fornecedor.
+  AGUARDANDO_FORNECEDOR
   SEM_RESULTADO
   ERRO
 }
@@ -71,27 +73,27 @@ enum StatusCotacaoDireta {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  nome         String
-  cargo        String?
-  setor        String?
-  municipio    String?
-  uf           String?
-  role         Role     @default(OPERADOR)
-  ativo        Boolean  @default(true)
-  passwordHash String?
-  refreshToken String?
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  nome               String
+  cargo              String?
+  setor              String?
+  municipio          String?
+  uf                 String?
+  role               Role      @default(OPERADOR)
+  ativo              Boolean   @default(true)
+  passwordHash       String?
+  refreshToken       String?
   // Token de convite / primeiro acesso (definir senha)
-  conviteToken    String?   @unique
-  conviteExpiraEm DateTime?
+  conviteToken       String?   @unique
+  conviteExpiraEm    DateTime?
   // Campos adicionados via migration (não utilizados pelo fluxo JWT stateless)
   resetSenhaToken    String?   @unique
   resetSenhaExpiraEm DateTime?
-  prefNotifEmail  Boolean   @default(true)
-  prefNotifInApp  Boolean   @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  prefNotifEmail     Boolean   @default(true)
+  prefNotifInApp     Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   pesquisas        Pesquisa[]
   fontesCriadas    FonteCotacao[]
@@ -107,33 +109,33 @@ model User {
 // ---------------------------------------------------------------------------
 
 model Pesquisa {
-  id                  String         @id @default(uuid())
-  titulo              String
-  descricao           String?
-  status              StatusPesquisa @default(AGUARDANDO)
-  userId              String
-  user                User           @relation(fields: [userId], references: [id])
-  totalItens          Int            @default(0)
-  itensComCotacao     Int            @default(0)
-  itensSemCotacao     Int            @default(0)
-  itensComErro        Int            @default(0)
-  resumoCobertura     String?
-  arquivoEntradaUrl   String?
-  arquivoSaidaUrl     String?
-  compartilhada       Boolean        @default(false)
-  linkCompartilhamento String?       @unique @default(uuid())
-  municipio           String?
-  uf                  String?
-  fundamentacaoLegal  String?
-  valorTotalEstimado  Decimal?       @db.Decimal(18, 2)
-  jobId               String?
-  erroProcessamento   String?
-  concluidaEm         DateTime?
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  id                   String         @id @default(uuid())
+  titulo               String
+  descricao            String?
+  status               StatusPesquisa @default(AGUARDANDO)
+  userId               String
+  user                 User           @relation(fields: [userId], references: [id])
+  totalItens           Int            @default(0)
+  itensComCotacao      Int            @default(0)
+  itensSemCotacao      Int            @default(0)
+  itensComErro         Int            @default(0)
+  resumoCobertura      String?
+  arquivoEntradaUrl    String?
+  arquivoSaidaUrl      String?
+  compartilhada        Boolean        @default(false)
+  linkCompartilhamento String?        @unique @default(uuid())
+  municipio            String?
+  uf                   String?
+  fundamentacaoLegal   String?
+  valorTotalEstimado   Decimal?       @db.Decimal(18, 2)
+  jobId                String?
+  erroProcessamento    String?
+  concluidaEm          DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
-  itens         ItemPesquisa[]
-  historicos    HistoricoPreco[]
+  itens      ItemPesquisa[]
+  historicos HistoricoPreco[]
 
   @@index([userId])
   @@index([status])
@@ -157,6 +159,9 @@ model ItemPesquisa {
   precoTotal           Decimal?   @db.Decimal(18, 2)
   statusItem           StatusItem @default(PENDENTE)
   observacao           String?
+  // Preços descartados como outlier no último cálculo, com justificativa —
+  // rastro exigido para auditoria (TCU) do critério de exclusão aplicado.
+  precosDescartados    Json?
   createdAt            DateTime   @default(now())
   updatedAt            DateTime   @updatedAt
 
@@ -187,15 +192,15 @@ model Cotacao {
 }
 
 model HistoricoPreco {
-  id            String   @id @default(uuid())
-  itemNome      String
-  fonte         String
-  preco         Decimal  @db.Decimal(18, 4)
-  dataReferencia DateTime @default(now())
-  pesquisaId    String?
-  pesquisa      Pesquisa? @relation(fields: [pesquisaId], references: [id], onDelete: SetNull)
-  municipio     String?
-  uf            String?
+  id             String    @id @default(uuid())
+  itemNome       String
+  fonte          String
+  preco          Decimal   @db.Decimal(18, 4)
+  dataReferencia DateTime  @default(now())
+  pesquisaId     String?
+  pesquisa       Pesquisa? @relation(fields: [pesquisaId], references: [id], onDelete: SetNull)
+  municipio      String?
+  uf             String?
 
   @@index([itemNome])
   @@index([dataReferencia])
@@ -240,15 +245,15 @@ model FonteCotacao {
 
 // Linhas de uma fonte do tipo TABELA_REFERENCIA (importadas por planilha)
 model TabelaReferenciaItem {
-  id             String       @id @default(uuid())
-  fonteId        String
-  fonte          FonteCotacao @relation(fields: [fonteId], references: [id], onDelete: Cascade)
-  descricao      String
-  descricaoNorm  String
-  unidadeMedida  String?
-  preco          Decimal      @db.Decimal(18, 4)
-  referencia     String?
-  createdAt      DateTime     @default(now())
+  id            String       @id @default(uuid())
+  fonteId       String
+  fonte         FonteCotacao @relation(fields: [fonteId], references: [id], onDelete: Cascade)
+  descricao     String
+  descricaoNorm String
+  unidadeMedida String?
+  preco         Decimal      @db.Decimal(18, 4)
+  referencia    String?
+  createdAt     DateTime     @default(now())
 
   @@index([fonteId])
   @@index([descricaoNorm])
@@ -259,21 +264,21 @@ model TabelaReferenciaItem {
 // ---------------------------------------------------------------------------
 
 model ConfiguracaoSistema {
-  id                     String        @id @default("singleton")
-  municipio              String?
-  uf                     String?
-  brasaoUrl              String?
-  responsavelTecnico     String?
-  metodoCalculo          MetodoCalculo @default(MEDIA)
-  limiteOutlierPercentual Int          @default(30)
-  minFontesCompleta      Int           @default(2)
-  itemAmostraTeste       String        @default("caneta esferográfica azul")
-  textosFundamentacao    Json?
-  smtpConfig             Json?
-  canalSuporte           Json?
-  updatedAt              DateTime      @updatedAt
-  updatedById            String?
-  updatedBy              User?         @relation(fields: [updatedById], references: [id])
+  id                      String        @id @default("singleton")
+  municipio               String?
+  uf                      String?
+  brasaoUrl               String?
+  responsavelTecnico      String?
+  metodoCalculo           MetodoCalculo @default(MEDIA)
+  limiteOutlierPercentual Int           @default(30)
+  minFontesCompleta       Int           @default(2)
+  itemAmostraTeste        String        @default("caneta esferográfica azul")
+  textosFundamentacao     Json?
+  smtpConfig              Json?
+  canalSuporte            Json?
+  updatedAt               DateTime      @updatedAt
+  updatedById             String?
+  updatedBy               User?         @relation(fields: [updatedById], references: [id])
 }
 
 // ---------------------------------------------------------------------------
@@ -313,14 +318,14 @@ model Notificacao {
 }
 
 model ArtigoAjuda {
-  id              String   @id @default(uuid())
-  categoria       String
-  titulo          String
-  slug            String   @unique
+  id               String   @id @default(uuid())
+  categoria        String
+  titulo           String
+  slug             String   @unique
   conteudoMarkdown String
-  ordem           Int      @default(0)
-  publicado       Boolean  @default(true)
-  updatedAt       DateTime @updatedAt
+  ordem            Int      @default(0)
+  publicado        Boolean  @default(true)
+  updatedAt        DateTime @updatedAt
 
   @@index([categoria])
 }
@@ -330,25 +335,25 @@ model ArtigoAjuda {
 // ---------------------------------------------------------------------------
 
 model DicionarioSinonimo {
-  id        String  @id @default(uuid())
-  termo     String  @unique
+  id        String   @id @default(uuid())
+  termo     String   @unique
   sinonimos Json
   expansoes Json
-  ativo     Boolean @default(true)
+  ativo     Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model ItemCatalogo {
-  id                     String    @id @default(uuid())
-  nomeNormalizado        String    @unique
-  descricaoPadrao        String
-  unidadeMedida          String?
-  vezesUsado             Int       @default(0)
-  ultimoPrecoReferencia  Decimal?  @db.Decimal(18, 4)
-  ultimaDataReferencia   DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  id                    String    @id @default(uuid())
+  nomeNormalizado       String    @unique
+  descricaoPadrao       String
+  unidadeMedida         String?
+  vezesUsado            Int       @default(0)
+  ultimoPrecoReferencia Decimal?  @db.Decimal(18, 4)
+  ultimaDataReferencia  DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([nomeNormalizado])
 }
@@ -369,27 +374,39 @@ model Fornecedor {
   municipio    String?
   uf           String?
   ativo        Boolean  @default(true)
+  // Categorias livres (ex.: "material de escritório", "informática") usadas
+  // para pré-selecionar fornecedores quando a cotação direta é disparada
+  // automaticamente após as fontes automáticas não atingirem o mínimo.
+  categorias   String[] @default([])
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   cotacoesDiretas CotacaoDireta[]
+
+  @@index([categorias], type: Gin)
 }
 
 model CotacaoDireta {
-  id                  String              @id @default(uuid())
-  itemPesquisaId      String
-  item                ItemPesquisa        @relation(fields: [itemPesquisaId], references: [id], onDelete: Cascade)
-  fornecedorId        String
-  fornecedor          Fornecedor          @relation(fields: [fornecedorId], references: [id])
-  preco               Decimal?            @db.Decimal(18, 4)
-  anexoSolicitacaoUrl String?
-  anexoRespostaUrl    String?
-  dataSolicitacao     DateTime            @default(now())
-  dataResposta        DateTime?
-  justificativa       String
-  status              StatusCotacaoDireta @default(ENVIADA)
-  outlier             Boolean             @default(false)
-  createdAt           DateTime            @default(now())
+  id                    String              @id @default(uuid())
+  itemPesquisaId        String
+  item                  ItemPesquisa        @relation(fields: [itemPesquisaId], references: [id], onDelete: Cascade)
+  fornecedorId          String
+  fornecedor            Fornecedor          @relation(fields: [fornecedorId], references: [id])
+  preco                 Decimal?            @db.Decimal(18, 4)
+  anexoSolicitacaoUrl   String?
+  anexoRespostaUrl      String?
+  dataSolicitacao       DateTime            @default(now())
+  dataResposta          DateTime?
+  justificativa         String
+  status                StatusCotacaoDireta @default(ENVIADA)
+  outlier               Boolean             @default(false)
+  // Marca solicitações abertas automaticamente pelo sistema (fallback de
+  // fontes automáticas), em oposição às criadas manualmente pelo agente.
+  origemAutomatica      Boolean             @default(false)
+  // Link público (sem login) para o fornecedor responder a cotação.
+  respostaToken         String?             @unique
+  respostaTokenExpiraEm DateTime?
+  createdAt             DateTime            @default(now())
 
   @@index([itemPesquisaId])
   @@index([fornecedorId])

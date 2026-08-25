@@ -179,10 +179,23 @@ export function useFornecedores(busca = '', pagina = 1) {
   });
 }
 
+export interface NovoFornecedor {
+  razaoSocial: string;
+  cnpj: string;
+  nomeFantasia?: string;
+  contatoNome?: string;
+  email?: string;
+  telefone?: string;
+  endereco?: string;
+  municipio?: string;
+  uf?: string;
+  categorias?: string[];
+}
+
 export function useCreateFornecedor() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { razaoSocial: string; cnpj: string; contatoNome?: string; email?: string; telefone?: string }) =>
+    mutationFn: (data: NovoFornecedor) =>
       apiFetch<Fornecedor>('/api/fornecedores', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['fornecedores'] }),
   });

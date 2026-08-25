@@ -17,6 +17,9 @@ const schemaFornecedor = z.object({
   endereco: z.string().optional(),
   municipio: z.string().optional(),
   uf: z.string().length(2).optional(),
+  // Usadas para pré-selecionar o fornecedor quando a cotação direta é
+  // disparada automaticamente (ver fornecedorMatch.service.ts).
+  categorias: z.array(z.string().min(1)).default([]),
 });
 
 // GET /api/fornecedores

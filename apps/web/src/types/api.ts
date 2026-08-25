@@ -1,6 +1,6 @@
 export type Role = 'ADMIN' | 'OPERADOR' | 'VISUALIZADOR';
 export type StatusPesquisa = 'AGUARDANDO' | 'PROCESSANDO' | 'CONCLUIDA' | 'ERRO';
-export type StatusItem = 'PENDENTE' | 'COTADO' | 'SEM_RESULTADO' | 'ERRO';
+export type StatusItem = 'PENDENTE' | 'COTADO' | 'AGUARDANDO_FORNECEDOR' | 'SEM_RESULTADO' | 'ERRO';
 export type TipoFonte = 'API_REST' | 'SCRAPING' | 'TABELA_REFERENCIA';
 export type StatusValidacaoFonte = 'VALIDA' | 'INVALIDA' | 'NAO_TESTADA';
 export type MetodoCalculo = 'MEDIA' | 'MEDIANA' | 'MENOR_PRECO';
@@ -50,6 +50,12 @@ export interface Pesquisa {
   user?: { nome: string; email: string };
 }
 
+export interface PrecoDescartado {
+  preco: number;
+  referencia: string;
+  motivo: string;
+}
+
 export interface ItemPesquisa {
   id: string;
   pesquisaId: string;
@@ -66,6 +72,7 @@ export interface ItemPesquisa {
   precoTotal: string | null;
   statusItem: StatusItem;
   observacao: string | null;
+  precosDescartados: PrecoDescartado[] | null;
   cotacoes?: Cotacao[];
   cotacoesDiretas?: CotacaoDireta[];
 }
@@ -90,6 +97,7 @@ export interface CotacaoDireta {
   status: StatusCotacaoDireta;
   justificativa: string;
   outlier: boolean;
+  origemAutomatica: boolean;
   dataSolicitacao: string;
   dataResposta: string | null;
   fornecedor?: Fornecedor;
@@ -125,6 +133,7 @@ export interface Fornecedor {
   endereco: string | null;
   municipio: string | null;
   uf: string | null;
+  categorias: string[];
   ativo: boolean;
   createdAt: string;
 }
@@ -176,6 +185,7 @@ export interface ProgressoPesquisa {
   itensComCotacao: number;
   itensSemCotacao: number;
   itensComErro: number;
+  itensAguardandoFornecedor: number;
   itemAtual?: { sequencia: number; nome: string; statusItem: StatusItem } | null;
   tempoEstimadoSegundos?: number | null;
   resumoCobertura?: string | null;

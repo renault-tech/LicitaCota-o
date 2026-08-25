@@ -45,17 +45,25 @@ export async function buscarJobPorId(jobId: string) {
 
 export async function enfileirarPesquisa(pesquisaId: string, autorId: string): Promise<string> {
   try {
+    // O jobId inclui um sufixo único (não é só pesquisaId): o BullMQ trata
+    // add() com um jobId já usado como no-op — mesmo que o job anterior já
+    // tenha concluído — então reaproveitar o pesquisaId puro faria
+    // "reprocessar" silenciosamente não fazer nada na segunda vez (o job
+    // "concluído" anterior permanece, um novo nunca é criado). A rota que
+    // chama esta função já impede reprocessamento concorrente checando
+    // status === 'PROCESSANDO' antes de enfileirar.
+    const jobId = `${pesquisaId}:${Date.now()}`;
     const job = await getPesquisaQueue().add(
       'processar',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       { pesquisaId, autorId } as any,
-      { attempts: 1, jobId: pesquisaId, removeOnComplete: 50, removeOnFail: 100 },
+      { attempts: 1, jobId, removeOnComplete: 50, removeOnFail: 100 },
     );
     return job.id ?? '';
   } catch (err) {
     // Redis indisponível — processa diretamente em background (sem fila)
     logger.warn('Redis indisponível, processando pesquisa diretamente.', { pesquisaId, erro: String(err) });
-    const jobId = `local-${pesquisaId}`;
+    const jobId = `local-${pesquisaId}-${Date.now()}`;
     setImmediate(() => {
       processarPesquisaDiretamente(pesquisaId, autorId).catch(async (e: unknown) => {
         const mensagem = e instanceof Error ? e.message : String(e);

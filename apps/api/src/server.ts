@@ -58,6 +58,16 @@ app.use(['/api/auth/login', '/api/auth/cadastro', '/api/auth/esqueci-senha', '/a
   message: { erro: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.', codigo: 'RATE_LIMIT' },
 }));
 
+// /api/cotar é pública (sem login) para o fornecedor responder pelo link do
+// e-mail — precisa de limite próprio e mais apertado que o global.
+app.use('/api/cotar', rateLimit({
+  windowMs: 15 * 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { erro: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.', codigo: 'RATE_LIMIT' },
+}));
+
 registrarRotas(app);
 
 // 404

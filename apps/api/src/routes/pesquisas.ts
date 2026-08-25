@@ -326,6 +326,7 @@ router.get('/:id/progresso', autenticar, async (req, res) => {
       itensComCotacao: jp?.itensComCotacao ?? p.itensComCotacao,
       itensSemCotacao: jp?.itensSemCotacao ?? p.itensSemCotacao,
       itensComErro: jp?.itensComErro ?? p.itensComErro,
+      itensAguardandoFornecedor: jp?.itensAguardandoFornecedor ?? 0,
       itemAtual: jp?.itemAtual ?? null,
       tempoEstimadoSegundos: jp?.tempoEstimadoSegundos ?? null,
       resumoCobertura: p.resumoCobertura,
