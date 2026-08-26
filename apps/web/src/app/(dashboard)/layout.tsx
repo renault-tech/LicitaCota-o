@@ -19,13 +19,17 @@ const PAGE_TITLES: Record<string, string> = {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { accessToken, refreshToken } = useAuthStore();
+  const { accessToken, refreshToken, hasHydrated } = useAuthStore();
 
   useEffect(() => {
-    if (!accessToken && !refreshToken) {
+    // Só decide "sem sessão" depois que o localStorage terminou de ser lido
+    // — antes disso accessToken/refreshToken são nulos por padrão mesmo com
+    // uma sessão válida salva, e redirecionar nesse momento manda pro login
+    // a cada F5.
+    if (hasHydrated && !accessToken && !refreshToken) {
       router.replace('/login');
     }
-  }, [accessToken, refreshToken, router]);
+  }, [hasHydrated, accessToken, refreshToken, router]);
 
   // Ping a cada 4 min para manter o servidor Render acordado
   useEffect(() => {
@@ -35,6 +39,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => clearInterval(id);
   }, []);
 
+  if (!hasHydrated) return null;
   if (!accessToken && !refreshToken) return null;
 
   const title = Object.entries(PAGE_TITLES).find(([k]) => pathname.startsWith(k))?.[1] ?? 'LicitaPreço';

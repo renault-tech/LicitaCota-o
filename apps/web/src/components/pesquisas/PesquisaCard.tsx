@@ -66,7 +66,7 @@ export default function PesquisaCard({ pesquisa, index = 0 }: Props) {
             onClick={handleExcluir}
             disabled={deletar.isPending}
             title="Excluir pesquisa"
-            className="w-6 h-6 flex items-center justify-center rounded-full text-zinc-300 opacity-0 group-hover:opacity-100 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all disabled:opacity-100"
+            className="w-6 h-6 flex items-center justify-center rounded-full text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-100"
           >
             {deletar.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
           </button>
