@@ -12,7 +12,7 @@ RUN pnpm install --frozen-lockfile
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
 
-RUN pnpm -F @licitapreco/shared build 2>/dev/null || true
+RUN pnpm -F @licitapreco/shared build
 RUN pnpm -F api exec prisma generate --schema=src/prisma/schema.prisma
 RUN pnpm -F api build
 
@@ -29,6 +29,7 @@ COPY packages/shared/package.json ./packages/shared/
 RUN pnpm install --frozen-lockfile --prod
 
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/apps/api/src/prisma/schema.prisma ./apps/api/src/prisma/schema.prisma
 COPY --from=builder /app/apps/api/src/prisma/migrations ./apps/api/src/prisma/migrations
