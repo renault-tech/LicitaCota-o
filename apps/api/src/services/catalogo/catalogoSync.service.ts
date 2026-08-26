@@ -11,54 +11,25 @@ import { logger } from '../../utils/logger.js';
  * pouco (o governo publica atualizações periódicas, não em tempo real), por
  * isso uma sincronização mensal é suficiente.
  *
- * IMPORTANTE — validar antes de confiar no resultado: o formato exato do CSV
- * (nomes de coluna) foi implementado com base na documentação pública do
- * Portal de Dados Abertos de Compras Governamentais, mas não pôde ser
- * testado contra o arquivo real neste ambiente de desenvolvimento (sem
- * acesso à internet). `sincronizarCatalogo` registra quantas linhas foram
- * importadas — se vier zero com HTTP 200, o formato mudou; ajuste apenas
- * `detectarColunas`/`parseLinha` abaixo.
+ * IMPORTANTE — validar antes de confiar no resultado: os nomes de campo
+ * exatos do JSON de resposta foram implementados com base na documentação
+ * pública da API (Manual do Usuário — API do Compras.gov.br), mas não
+ * puderam ser confirmados contra a resposta real neste ambiente de
+ * desenvolvimento (sem acesso à internet). `sincronizarCatalogo` registra
+ * quantos itens foram importados — se vier zero com HTTP 200, o formato
+ * mudou; ajuste apenas `extrairLinha`/`extrairArray` abaixo.
+ *
+ * Histórico: a primeira versão baixava um CSV em lote de
+ * compras.dados.gov.br (portal de dados abertos legado) — esse domínio
+ * respondeu HTTP 404 em produção (path descontinuado). Trocado para as
+ * mesmas rotas paginadas da API de consulta usadas pelos outros adapters
+ * (dadosabertos.compras.gov.br), que já sabemos ser alcançáveis.
  */
 
-const URL_MATERIAIS = 'http://compras.dados.gov.br/materiais/v1/materiais.csv';
-const URL_SERVICOS = 'http://compras.dados.gov.br/servicos/v1/servicos.csv';
-
-/** Parser de CSV tolerante a campos entre aspas contendo vírgula. */
-function parseCsv(texto: string): string[][] {
-  const linhas: string[][] = [];
-  let campo = '';
-  let linha: string[] = [];
-  let dentroAspas = false;
-
-  for (let i = 0; i < texto.length; i++) {
-    const c = texto[i];
-    if (dentroAspas) {
-      if (c === '"') {
-        if (texto[i + 1] === '"') { campo += '"'; i++; } else { dentroAspas = false; }
-      } else {
-        campo += c;
-      }
-    } else if (c === '"') {
-      dentroAspas = true;
-    } else if (c === ',') {
-      linha.push(campo);
-      campo = '';
-    } else if (c === '\n' || c === '\r') {
-      if (c === '\r' && texto[i + 1] === '\n') i++;
-      linha.push(campo);
-      if (linha.some((v) => v.trim() !== '')) linhas.push(linha);
-      linha = [];
-      campo = '';
-    } else {
-      campo += c;
-    }
-  }
-  if (campo !== '' || linha.length > 0) {
-    linha.push(campo);
-    if (linha.some((v) => v.trim() !== '')) linhas.push(linha);
-  }
-  return linhas;
-}
+const URL_MATERIAIS = 'https://dadosabertos.compras.gov.br/modulo-material/4_consultarItemMaterial';
+const URL_SERVICOS = 'https://dadosabertos.compras.gov.br/modulo-servico/6_consultarItemServico';
+const TAMANHO_PAGINA_API = 500;
+const MAX_PAGINAS = 400; // teto de segurança: 400×500 = 200 mil itens
 
 interface LinhaCatalogo {
   codigo: number;
@@ -69,50 +40,67 @@ interface LinhaCatalogo {
   ativo: boolean;
 }
 
-/** Aceita as variações de nome de coluna conhecidas para cada campo. */
-function indiceColuna(cabecalho: string[], candidatos: string[]): number {
-  const normalizados = cabecalho.map((c) => c.trim().toLowerCase());
-  for (const cand of candidatos) {
-    const i = normalizados.indexOf(cand);
-    if (i >= 0) return i;
+type ObjetoBruto = Record<string, unknown>;
+
+function primeiroValor(obj: ObjetoBruto, chaves: string[]): unknown {
+  for (const chave of chaves) {
+    if (obj[chave] !== undefined && obj[chave] !== null) return obj[chave];
   }
-  return -1;
+  return undefined;
 }
 
-function interpretarLinhas(linhas: string[][]): LinhaCatalogo[] {
-  if (linhas.length < 2) return [];
-  const [cabecalho, ...resto] = linhas;
+/** A API embrulha a lista de formas diferentes conforme o endpoint. */
+function extrairArray(corpo: unknown): ObjetoBruto[] {
+  if (Array.isArray(corpo)) return corpo as ObjetoBruto[];
+  const obj = corpo as ObjetoBruto | null;
+  if (!obj) return [];
+  if (Array.isArray(obj.resultado)) return obj.resultado as ObjetoBruto[];
+  if (Array.isArray(obj.content)) return obj.content as ObjetoBruto[];
+  if (Array.isArray(obj._embedded)) return obj._embedded as ObjetoBruto[];
+  if (Array.isArray(obj.data)) return obj.data as ObjetoBruto[];
+  return [];
+}
 
-  const iCodigo = indiceColuna(cabecalho, ['id', 'codigo', 'código', 'codigo_item']);
-  const iDescricao = indiceColuna(cabecalho, ['material', 'servico', 'serviço', 'descricao', 'descrição', 'nome']);
-  const iGrupo = indiceColuna(cabecalho, ['grupo', 'codigo_grupo']);
-  const iClasse = indiceColuna(cabecalho, ['classe', 'codigo_classe']);
-  const iPdm = indiceColuna(cabecalho, ['pdm', 'codigo_pdm']);
-  const iStatus = indiceColuna(cabecalho, ['status', 'situacao', 'situação']);
+function extrairLinha(obj: ObjetoBruto): LinhaCatalogo | null {
+  const codigoRaw = primeiroValor(obj, ['codigoItem', 'codigo', 'id']);
+  const codigo = Number.parseInt(String(codigoRaw ?? ''), 10);
+  const descricao = String(primeiroValor(obj, ['descricaoItem', 'descricao', 'nomeItem', 'nome']) ?? '').trim();
+  if (!Number.isFinite(codigo) || !descricao) return null;
 
-  if (iCodigo < 0 || iDescricao < 0) {
-    logger.warn('Catálogo oficial: colunas esperadas não encontradas no CSV', { cabecalho });
-    return [];
+  const statusTexto = String(primeiroValor(obj, ['situacao', 'status', 'situacaoItem']) ?? '').toLowerCase();
+  const grupoRaw = primeiroValor(obj, ['codigoGrupo', 'grupo']);
+  const classeRaw = primeiroValor(obj, ['codigoClasse', 'classe']);
+  const pdmRaw = primeiroValor(obj, ['codigoPdm', 'pdm']);
+
+  return {
+    codigo,
+    descricao,
+    grupo: grupoRaw !== undefined ? String(grupoRaw) : null,
+    classe: classeRaw !== undefined ? String(classeRaw) : null,
+    pdm: pdmRaw !== undefined ? String(pdmRaw) : null,
+    // "inativo".includes('ativ') também é true — não dá pra testar
+    // presença de "ativ", tem que ser ausência de "inativ".
+    ativo: statusTexto === '' || !statusTexto.includes('inativ'),
+  };
+}
+
+/** Pagina até a API devolver uma página vazia/menor que o pedido, ou até o teto de segurança. */
+async function buscarTodasPaginas(urlBase: string): Promise<LinhaCatalogo[]> {
+  const linhas: LinhaCatalogo[] = [];
+  for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
+    const url = `${urlBase}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_API}`;
+    const resp = await requisitar(url, { timeoutMs: 20000, retries: 1, pausaMs: 1000 });
+    if (!resp.ok) throw new Error(`Catálogo oficial respondeu HTTP ${resp.status} (página ${pagina}).`);
+
+    const brutos = extrairArray(resp.corpoJson);
+    if (brutos.length === 0) break;
+    for (const b of brutos) {
+      const linha = extrairLinha(b);
+      if (linha) linhas.push(linha);
+    }
+    if (brutos.length < TAMANHO_PAGINA_API) break;
   }
-
-  const resultado: LinhaCatalogo[] = [];
-  for (const l of resto) {
-    const codigo = Number.parseInt(l[iCodigo]?.trim() ?? '', 10);
-    const descricao = l[iDescricao]?.trim() ?? '';
-    if (!Number.isFinite(codigo) || !descricao) continue;
-    const statusTexto = (iStatus >= 0 ? l[iStatus] : '')?.trim().toLowerCase() ?? '';
-    resultado.push({
-      codigo,
-      descricao,
-      grupo: iGrupo >= 0 ? (l[iGrupo]?.trim() || null) : null,
-      classe: iClasse >= 0 ? (l[iClasse]?.trim() || null) : null,
-      pdm: iPdm >= 0 ? (l[iPdm]?.trim() || null) : null,
-      // "inativo".includes('ativ') também é true — não dá pra testar
-      // presença de "ativ", tem que ser ausência de "inativ".
-      ativo: statusTexto === '' || !statusTexto.includes('inativ'),
-    });
-  }
-  return resultado;
+  return linhas;
 }
 
 const TAMANHO_LOTE = 500;
@@ -146,14 +134,10 @@ async function garantirIndiceTrigram(): Promise<void> {
   );
 }
 
-async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', url: string): Promise<number> {
-  const resp = await requisitar(url, { timeoutMs: 120000, retries: 1, pausaMs: 3000 });
-  if (!resp.ok) {
-    throw new Error(`Catálogo oficial (${tipo}) respondeu HTTP ${resp.status} ao baixar CSV.`);
-  }
-  const linhas = interpretarLinhas(parseCsv(resp.corpoTexto));
+async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<number> {
+  const linhas = await buscarTodasPaginas(urlBase);
   if (linhas.length === 0) {
-    logger.warn(`Catálogo oficial (${tipo}): CSV baixado mas nenhuma linha reconhecida — confira o formato.`);
+    logger.warn(`Catálogo oficial (${tipo}): resposta recebida mas nenhum item reconhecido — confira o formato do JSON.`);
     return 0;
   }
   await gravarLote(tipo, linhas);
