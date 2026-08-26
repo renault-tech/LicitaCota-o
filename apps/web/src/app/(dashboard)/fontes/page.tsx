@@ -85,9 +85,7 @@ export default function FontesPage() {
                 Sincronizando...
               </span>
             ) : catalogo.sincronizacao.ultimoResultado?.erro ? (
-              <span className="text-xs text-red-500" title={catalogo.sincronizacao.ultimoResultado.erro}>
-                Falha na última sincronização
-              </span>
+              <span className="text-xs text-red-500">Falha na última sincronização</span>
             ) : catalogo.materiais === 0 && catalogo.servicos === 0 ? (
               <span className="text-xs text-amber-500">Ainda não sincronizado</span>
             ) : null}
@@ -103,6 +101,12 @@ export default function FontesPage() {
               </button>
             )}
           </div>
+
+          {!catalogo.sincronizacao.emAndamento && catalogo.sincronizacao.ultimoResultado?.erro && (
+            <p className="w-full text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 mt-1">
+              {catalogo.sincronizacao.ultimoResultado.erro}
+            </p>
+          )}
         </div>
       )}
 
