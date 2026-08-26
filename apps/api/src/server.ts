@@ -16,6 +16,15 @@ const app: Express = express();
 // real de quem faz a requisição (usaria o IP do proxy para todo mundo).
 app.set('trust proxy', 1);
 
+// Express calcula ETag por padrão para toda resposta. Numa API JSON
+// autenticada isso é errado: o navegador revalida com If-None-Match e o
+// servidor responde 304 (sem corpo) quando o conteúdo não mudou — mas
+// fetch() nunca trata 304 como "ok" (só 200-299), então qualquer chamada
+// que caia nesse caminho é tratada como erro no cliente mesmo tendo dado
+// certo. É o que fazia as fontes "sumirem" logo após uma renovação de
+// token: a nova requisição batia num ETag antigo e voltava 304.
+app.set('etag', false);
+
 const origensPermitidas = [
   env.FRONTEND_URL,
   'http://localhost:3000',
