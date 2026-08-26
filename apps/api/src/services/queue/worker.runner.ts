@@ -9,6 +9,7 @@ import { salvarArquivo } from '../storage.service.js';
 import { notificar } from '../notificacao.service.js';
 import { registrarAuditoria } from '../auditoria.service.js';
 import { progressStore } from './progressStore.js';
+import { sincronizarCatalogo, catalogoEstaVazio } from '../catalogo/catalogoSync.service.js';
 // PesquisaJobData definida localmente para evitar importação circular com pesquisa.queue.ts
 interface PesquisaJobData { pesquisaId: string; autorId: string; }
 
@@ -269,5 +270,41 @@ worker.on('error', (err) => {
 });
 
 logger.info('Worker de pesquisas iniciado (concorrência: 2 jobs × 3 itens simultâneos).');
+
+const UM_DIA_MS = 24 * 60 * 60 * 1000;
+const TRINTA_DIAS_MS = 30 * UM_DIA_MS;
+
+/**
+ * Mantém o catálogo oficial CATMAT/CATSER local em dia: sincroniza uma vez
+ * se a tabela estiver vazia (primeira execução) e depois verifica uma vez
+ * por dia se já passaram 30 dias desde a última atualização. Roda em
+ * processo (instância única no Render) — não bloqueia o boot do servidor.
+ */
+async function manterCatalogoAtualizado(): Promise<void> {
+  try {
+    if (await catalogoEstaVazio()) {
+      logger.info('Catálogo oficial vazio — sincronizando pela primeira vez.');
+      await sincronizarCatalogo();
+    }
+  } catch (e) {
+    logger.error('Falha na sincronização inicial do catálogo oficial', e);
+  }
+}
+
+setImmediate(() => { manterCatalogoAtualizado().catch(() => {}); });
+
+setInterval(() => {
+  prisma.catalogoOficialItem
+    .findFirst({ orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } })
+    .then((ultimo) => {
+      const desatualizado = !ultimo || Date.now() - ultimo.updatedAt.getTime() > TRINTA_DIAS_MS;
+      if (desatualizado) {
+        logger.info('Catálogo oficial com mais de 30 dias — sincronizando.');
+        return sincronizarCatalogo();
+      }
+      return undefined;
+    })
+    .catch((e: unknown) => logger.error('Falha ao verificar atualidade do catálogo oficial', e));
+}, UM_DIA_MS);
 
 export default worker;

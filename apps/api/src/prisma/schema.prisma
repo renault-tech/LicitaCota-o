@@ -344,6 +344,32 @@ model DicionarioSinonimo {
   updatedAt DateTime @updatedAt
 }
 
+// Catálogo oficial CATMAT/CATSER (SIASG/Compras.gov.br), sincronizado
+// periodicamente a partir do CSV público — usado para resolver a descrição
+// de um item para um código de catálogo antes de consultar o Painel de
+// Preços (que busca por código, não por texto livre). Índice de similaridade
+// de texto (pg_trgm) é criado via SQL bruto pelo serviço de sincronização,
+// não é representável no schema do Prisma.
+enum TipoCatalogoOficial {
+  MATERIAL
+  SERVICO
+}
+
+model CatalogoOficialItem {
+  id        String              @id @default(uuid())
+  tipo      TipoCatalogoOficial
+  codigo    Int
+  descricao String
+  grupo     String?
+  classe    String?
+  pdm       String?
+  ativo     Boolean             @default(true)
+  updatedAt DateTime            @updatedAt
+
+  @@unique([tipo, codigo])
+  @@index([tipo, ativo])
+}
+
 model ItemCatalogo {
   id                    String    @id @default(uuid())
   nomeNormalizado       String    @unique
