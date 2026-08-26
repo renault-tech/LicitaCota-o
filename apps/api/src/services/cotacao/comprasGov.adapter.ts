@@ -53,6 +53,12 @@ async function buscarPorCodigo(codigoItemCatalogo: number, uf: string | undefine
   if (uf) params.set('uf', uf);
   const url = `${BASE}/1_consultarMaterial?${params.toString()}`;
   const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
+  // 404 aqui não é "endpoint errado" (path e parâmetros batem com a
+  // documentação oficial) — é como essa API sinaliza "nenhum preço
+  // registrado para este código de catálogo". Um código sem histórico de
+  // compra é normal (nem todo item do CATMAT já foi comprado recentemente),
+  // não uma falha de conexão.
+  if (resp.status === 404) return [];
   if (!resp.ok) throw new Error(`Compras.gov.br respondeu HTTP ${resp.status}.`);
   return extrairResultados(resp.corpoJson);
 }

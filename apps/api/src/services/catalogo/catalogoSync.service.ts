@@ -29,7 +29,7 @@ import { logger } from '../../utils/logger.js';
 const URL_MATERIAIS = 'https://dadosabertos.compras.gov.br/modulo-material/4_consultarItemMaterial';
 const URL_SERVICOS = 'https://dadosabertos.compras.gov.br/modulo-servico/6_consultarItemServico';
 const TAMANHO_PAGINA_API = 500;
-const MAX_PAGINAS = 400; // teto de segurança: 400×500 = 200 mil itens
+const MAX_PAGINAS = 3000; // teto de segurança: 3000×500 = 1,5 milhão de itens — CATMAT sozinho já passa de 200 mil
 
 interface LinhaCatalogo {
   codigo: number;
@@ -281,18 +281,23 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
   let servicos = 0;
   const erros: string[] = [];
 
-  try {
-    materiais = await sincronizarUm('MATERIAL', URL_MATERIAIS);
-  } catch (e) {
-    erros.push(e instanceof Error ? e.message : String(e));
-    logger.error('Falha ao sincronizar CATMAT', e);
-  }
-
+  // CATSER primeiro: bem menor que o CATMAT, termina rápido. Se a instância
+  // for reciclada no meio da sincronização (grátis do Render dorme com
+  // inatividade — o job roda em segundo plano, sem requisição HTTP entrando,
+  // então nada garante que o processo sobrevive até o fim), pelo menos os
+  // serviços já estarão completos em vez de ficarem em zero.
   try {
     servicos = await sincronizarUm('SERVICO', URL_SERVICOS);
   } catch (e) {
     erros.push(e instanceof Error ? e.message : String(e));
     logger.error('Falha ao sincronizar CATSER', e);
+  }
+
+  try {
+    materiais = await sincronizarUm('MATERIAL', URL_MATERIAIS);
+  } catch (e) {
+    erros.push(e instanceof Error ? e.message : String(e));
+    logger.error('Falha ao sincronizar CATMAT', e);
   }
 
   logger.info(`Catálogo oficial sincronizado: ${materiais} materiais, ${servicos} serviços.`);
