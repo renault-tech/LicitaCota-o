@@ -7,6 +7,7 @@ import { usePesquisas } from '@/lib/queries';
 import PesquisaCard from '@/components/pesquisas/PesquisaCard';
 import NovaPesquisaModal from '@/components/pesquisas/NovaPesquisaModal';
 import EmptyState from '@/components/common/EmptyState';
+import ErrorState from '@/components/common/ErrorState';
 import { cn } from '@/lib/utils';
 import type { StatusPesquisa } from '@/types/api';
 
@@ -28,7 +29,7 @@ export default function PesquisasPage() {
     if (searchParams.get('nova') === '1') setModalOpen(true);
   }, [searchParams]);
 
-  const { data, isLoading } = usePesquisas(pagina, filtro || undefined);
+  const { data, isLoading, isError, error, refetch } = usePesquisas(pagina, filtro || undefined);
 
   return (
     <>
@@ -69,6 +70,8 @@ export default function PesquisasPage() {
             </div>
           ))}
         </div>
+      ) : isError ? (
+        <ErrorState message={error instanceof Error ? error.message : 'Erro ao carregar pesquisas.'} onRetry={() => refetch()} />
       ) : !data?.pesquisas?.length ? (
         <EmptyState
           icon={FileSearch}

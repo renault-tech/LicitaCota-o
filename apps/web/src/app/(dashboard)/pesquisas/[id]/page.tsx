@@ -8,6 +8,7 @@ import { usePesquisa, useProcessarPesquisa, useReprocessarPesquisa, useDeletePes
 import { apiFetch, apiUrl } from '@/lib/api';
 import { getAccessToken } from '@/lib/api';
 import { PesquisaBadge, ItemBadge } from '@/components/common/StatusBadge';
+import ErrorState from '@/components/common/ErrorState';
 import UploadZone from '@/components/pesquisas/UploadZone';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import type { ResultadoLeitura, ItemPlanilhaEntrada } from '@/types/api';
@@ -18,7 +19,7 @@ type Tab = 'visao-geral' | 'upload' | 'itens';
 export default function PesquisaPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { data: pesquisa, isLoading, refetch } = usePesquisa(id);
+  const { data: pesquisa, isLoading, isError, error, refetch } = usePesquisa(id);
   const processar = useProcessarPesquisa(id);
   const reprocessar = useReprocessarPesquisa(id);
   const deletar = useDeletePesquisa();
@@ -105,6 +106,11 @@ export default function PesquisaPage({ params }: { params: Promise<{ id: string 
     <div className="max-w-4xl mx-auto space-y-4 animate-pulse">
       <div className="h-8 bg-zinc-200 dark:bg-zinc-700 rounded-full w-1/3" />
       <div className="card h-40" />
+    </div>
+  );
+  if (isError) return (
+    <div className="max-w-4xl mx-auto">
+      <ErrorState message={error instanceof Error ? error.message : 'Erro ao carregar a pesquisa.'} onRetry={() => refetch()} />
     </div>
   );
   if (!pesquisa) return null;

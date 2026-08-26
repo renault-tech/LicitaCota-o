@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useFontes, useTestarFonte, useAtivarFonte } from '@/lib/queries';
 import { FonteBadge } from '@/components/common/StatusBadge';
 import EmptyState from '@/components/common/EmptyState';
+import ErrorState from '@/components/common/ErrorState';
 import { formatDate, cn } from '@/lib/utils';
 import type { TipoFonte } from '@/types/api';
 
@@ -13,7 +14,7 @@ const TIPO_ICON = { API_REST: Globe, SCRAPING: Zap, TABELA_REFERENCIA: Table };
 const TIPO_LABEL: Record<TipoFonte, string> = { API_REST: 'API REST', SCRAPING: 'Scraping', TABELA_REFERENCIA: 'Tabela' };
 
 export default function FontesPage() {
-  const { data: fontes, isLoading } = useFontes();
+  const { data: fontes, isLoading, isError, error, refetch } = useFontes();
   const testar = useTestarFonte();
   const ativar = useAtivarFonte();
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string; latencia: number }>>({});
@@ -51,6 +52,8 @@ export default function FontesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[0, 1, 2].map((i) => <div key={i} className="card animate-pulse h-40" />)}
         </div>
+      ) : isError ? (
+        <ErrorState message={error instanceof Error ? error.message : 'Erro ao carregar fontes.'} onRetry={() => refetch()} />
       ) : !fontes?.length ? (
         <EmptyState icon={Database} title="Nenhuma fonte cadastrada" description="Adicione fontes para habilitar o motor de cotação." />
       ) : (

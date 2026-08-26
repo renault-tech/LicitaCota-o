@@ -41,7 +41,12 @@ app.use(cors({
     if (!origin) return cb(null, true);
     if (origensPermitidas.includes(origin)) return cb(null, true);
     if (permitirPreviewsVercel && origin.endsWith('.vercel.app')) return cb(null, true);
-    cb(new Error(`CORS: origem não permitida — ${origin}`));
+    // cb(null, false) — em vez de cb(new Error(...)) — porque um erro aqui
+    // cai no error handler global, que responde sem cabeçalhos CORS: o
+    // navegador então mostra um bloqueio CORS genérico em vez do 403 real,
+    // escondendo a causa. Registra a origem rejeitada para diagnóstico.
+    logger.warn(`CORS: origem não permitida — ${origin}`);
+    cb(null, false);
   },
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization'],
