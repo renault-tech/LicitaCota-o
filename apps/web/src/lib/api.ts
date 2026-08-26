@@ -10,7 +10,25 @@ export function getAccessToken(): string | null {
   return _accessToken;
 }
 
+// Chamadas concorrentes que recebem 401 ao mesmo tempo (ex.: a tela de
+// Fontes busca fontes + notificações em paralelo) não podem cada uma
+// disparar seu próprio /api/auth/refresh: o backend ROTACIONA o refresh
+// token a cada troca bem-sucedida, então a segunda chamada — que ainda usa
+// o token antigo lido do localStorage antes da primeira terminar — é
+// rejeitada pelo servidor, e isso força um logout mesmo com sessão válida.
+// Compartilhar uma única promise em andamento entre todas as chamadas
+// concorrentes elimina essa corrida.
+let refreshEmAndamento: Promise<string | null> | null = null;
+
 async function tryRefresh(): Promise<string | null> {
+  if (refreshEmAndamento) return refreshEmAndamento;
+  refreshEmAndamento = executarRefresh().finally(() => {
+    refreshEmAndamento = null;
+  });
+  return refreshEmAndamento;
+}
+
+async function executarRefresh(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
   const stored = localStorage.getItem('licitapreco-auth');
   if (!stored) return null;

@@ -11,6 +11,11 @@ import { AppError } from './utils/errors.js';
 
 const app: Express = express();
 
+// O Render fica atrás de um proxy reverso: sem isso o express-rate-limit
+// não confia no cabeçalho X-Forwarded-For e não consegue identificar o IP
+// real de quem faz a requisição (usaria o IP do proxy para todo mundo).
+app.set('trust proxy', 1);
+
 const origensPermitidas = [
   env.FRONTEND_URL,
   'http://localhost:3000',
