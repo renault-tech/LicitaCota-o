@@ -112,34 +112,84 @@ async function gravarPagina(tipo: 'MATERIAL' | 'SERVICO', itens: LinhaCatalogo[]
   );
 }
 
+const CONCORRENCIA_PAGINAS = 6;
+
+async function buscarPagina(urlBase: string, pagina: number): Promise<{ brutos: ObjetoBruto[]; totalRegistros: number | null }> {
+  const url = `${urlBase}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_API}`;
+  const resp = await requisitar(url, { timeoutMs: 20000, retries: 1, pausaMs: 1000 });
+  if (!resp.ok) throw new Error(`Catálogo oficial respondeu HTTP ${resp.status} (página ${pagina}).`);
+  return { brutos: extrairArray(resp.corpoJson), totalRegistros: extrairTotalRegistros(resp.corpoJson) };
+}
+
+async function gravarEContar(tipo: 'MATERIAL' | 'SERVICO', brutos: ObjetoBruto[]): Promise<number> {
+  const linhas = brutos.map(extrairLinha).filter((l): l is LinhaCatalogo => l !== null);
+  await gravarPagina(tipo, linhas);
+  return linhas.length;
+}
+
 /**
  * Pagina até a API devolver uma página vazia/menor que o pedido, ou até o
  * teto de segurança — grava cada página assim que chega (não acumula tudo
  * em memória para gravar no final), para que o progresso visível na tela de
  * Fontes avance em tempo real e uma interrupção no meio não perca o que já
  * foi baixado.
+ *
+ * Busca a página 1 sozinha primeiro (para descobrir o total, se a API
+ * informar). Com o total em mãos, busca o resto em paralelo (algumas
+ * páginas por vez) — é isso que reduz o tempo total de forma relevante,
+ * já que o gargalo é esperar cada requisição de rede, não o processamento
+ * local. Sem total conhecido, cai para busca sequencial (mais segura,
+ * porque não dá pra saber de antemão quantas páginas existem).
  */
 async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<number> {
   let processados = 0;
-  let totalEstimado: number | null = null;
 
-  for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
-    const url = `${urlBase}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_API}`;
-    const resp = await requisitar(url, { timeoutMs: 20000, retries: 1, pausaMs: 1000 });
-    if (!resp.ok) throw new Error(`Catálogo oficial respondeu HTTP ${resp.status} (página ${pagina}).`);
+  const primeira = await buscarPagina(urlBase, 1);
+  const totalEstimado = primeira.totalRegistros;
+  if (primeira.brutos.length > 0) {
+    const contagem = await gravarEContar(tipo, primeira.brutos);
+    processados += contagem;
+    atualizarProgresso({ tipo, pagina: 1, processados, totalEstimado });
+  }
 
-    if (pagina === 1) totalEstimado = extrairTotalRegistros(resp.corpoJson);
+  const paraQuePagina1JaBaste = primeira.brutos.length === 0 || primeira.brutos.length < TAMANHO_PAGINA_API;
 
-    const brutos = extrairArray(resp.corpoJson);
-    if (brutos.length === 0) break;
+  if (!paraQuePagina1JaBaste && totalEstimado) {
+    // Total conhecido: dispara o resto das páginas em paralelo, respeitando ordem só para o contador de "página atual" exibido.
+    const totalPaginas = Math.min(MAX_PAGINAS, Math.ceil(totalEstimado / TAMANHO_PAGINA_API));
+    let proximaPagina = 2;
+    let maiorPaginaConcluida = 1;
 
-    const linhas = brutos.map(extrairLinha).filter((l): l is LinhaCatalogo => l !== null);
-    await gravarPagina(tipo, linhas);
-    processados += linhas.length;
+    async function worker(): Promise<void> {
+      while (true) {
+        const pagina = proximaPagina++;
+        if (pagina > totalPaginas) return;
+        const { brutos } = await buscarPagina(urlBase, pagina);
+        if (brutos.length > 0) {
+          // Nunca `processados += await ...` aqui: isso lê o valor de
+          // processados ANTES do await suspender — com workers concorrentes,
+          // o valor lido fica desatualizado e um worker sobrescreve o
+          // incremento do outro ao retomar. Precisa ler processados só
+          // depois que o await já terminou.
+          const contagem = await gravarEContar(tipo, brutos);
+          processados += contagem;
+        }
+        maiorPaginaConcluida = Math.max(maiorPaginaConcluida, pagina);
+        atualizarProgresso({ tipo, pagina: maiorPaginaConcluida, processados, totalEstimado });
+      }
+    }
 
-    atualizarProgresso({ tipo, pagina, processados, totalEstimado });
-
-    if (brutos.length < TAMANHO_PAGINA_API) break;
+    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_PAGINAS, totalPaginas - 1) }, worker));
+  } else if (!paraQuePagina1JaBaste) {
+    // Total desconhecido: sequencial, para poder parar exatamente na primeira página vazia/parcial.
+    for (let pagina = 2; pagina <= MAX_PAGINAS; pagina++) {
+      const { brutos } = await buscarPagina(urlBase, pagina);
+      if (brutos.length === 0) break;
+      const contagem = await gravarEContar(tipo, brutos);
+      processados += contagem;
+      atualizarProgresso({ tipo, pagina, processados, totalEstimado: null });
+      if (brutos.length < TAMANHO_PAGINA_API) break;
+    }
   }
 
   if (processados === 0) {
