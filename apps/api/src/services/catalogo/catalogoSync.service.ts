@@ -61,6 +61,15 @@ function extrairArray(corpo: unknown): ObjetoBruto[] {
   return [];
 }
 
+/** Best-effort: nem toda resposta paginada informa o total — se não vier, seguimos sem estimativa de ETA. */
+function extrairTotalRegistros(corpo: unknown): number | null {
+  const obj = corpo as ObjetoBruto | null;
+  if (!obj || Array.isArray(obj)) return null;
+  const total = primeiroValor(obj, ['totalRegistros', 'totalElements', 'total', 'totalItens']);
+  const n = Number(total);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function extrairLinha(obj: ObjetoBruto): LinhaCatalogo | null {
   const codigoRaw = primeiroValor(obj, ['codigoItem', 'codigo', 'id']);
   const codigo = Number.parseInt(String(codigoRaw ?? ''), 10);
@@ -84,46 +93,59 @@ function extrairLinha(obj: ObjetoBruto): LinhaCatalogo | null {
   };
 }
 
-/** Pagina até a API devolver uma página vazia/menor que o pedido, ou até o teto de segurança. */
-async function buscarTodasPaginas(urlBase: string): Promise<LinhaCatalogo[]> {
-  const linhas: LinhaCatalogo[] = [];
+async function gravarPagina(tipo: 'MATERIAL' | 'SERVICO', itens: LinhaCatalogo[]): Promise<void> {
+  if (itens.length === 0) return;
+  await prisma.$transaction(
+    itens.map((item) =>
+      prisma.catalogoOficialItem.upsert({
+        where: { tipo_codigo: { tipo, codigo: item.codigo } },
+        update: {
+          descricao: item.descricao,
+          grupo: item.grupo,
+          classe: item.classe,
+          pdm: item.pdm,
+          ativo: item.ativo,
+        },
+        create: { tipo, ...item },
+      }),
+    ),
+  );
+}
+
+/**
+ * Pagina até a API devolver uma página vazia/menor que o pedido, ou até o
+ * teto de segurança — grava cada página assim que chega (não acumula tudo
+ * em memória para gravar no final), para que o progresso visível na tela de
+ * Fontes avance em tempo real e uma interrupção no meio não perca o que já
+ * foi baixado.
+ */
+async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<number> {
+  let processados = 0;
+  let totalEstimado: number | null = null;
+
   for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
     const url = `${urlBase}?pagina=${pagina}&tamanhoPagina=${TAMANHO_PAGINA_API}`;
     const resp = await requisitar(url, { timeoutMs: 20000, retries: 1, pausaMs: 1000 });
     if (!resp.ok) throw new Error(`Catálogo oficial respondeu HTTP ${resp.status} (página ${pagina}).`);
 
+    if (pagina === 1) totalEstimado = extrairTotalRegistros(resp.corpoJson);
+
     const brutos = extrairArray(resp.corpoJson);
     if (brutos.length === 0) break;
-    for (const b of brutos) {
-      const linha = extrairLinha(b);
-      if (linha) linhas.push(linha);
-    }
+
+    const linhas = brutos.map(extrairLinha).filter((l): l is LinhaCatalogo => l !== null);
+    await gravarPagina(tipo, linhas);
+    processados += linhas.length;
+
+    atualizarProgresso({ tipo, pagina, processados, totalEstimado });
+
     if (brutos.length < TAMANHO_PAGINA_API) break;
   }
-  return linhas;
-}
 
-const TAMANHO_LOTE = 500;
-
-async function gravarLote(tipo: 'MATERIAL' | 'SERVICO', itens: LinhaCatalogo[]): Promise<void> {
-  for (let i = 0; i < itens.length; i += TAMANHO_LOTE) {
-    const lote = itens.slice(i, i + TAMANHO_LOTE);
-    await prisma.$transaction(
-      lote.map((item) =>
-        prisma.catalogoOficialItem.upsert({
-          where: { tipo_codigo: { tipo, codigo: item.codigo } },
-          update: {
-            descricao: item.descricao,
-            grupo: item.grupo,
-            classe: item.classe,
-            pdm: item.pdm,
-            ativo: item.ativo,
-          },
-          create: { tipo, ...item },
-        }),
-      ),
-    );
+  if (processados === 0) {
+    logger.warn(`Catálogo oficial (${tipo}): resposta recebida mas nenhum item reconhecido — confira o formato do JSON.`);
   }
+  return processados;
 }
 
 async function garantirIndiceTrigram(): Promise<void> {
@@ -132,16 +154,6 @@ async function garantirIndiceTrigram(): Promise<void> {
     'CREATE INDEX IF NOT EXISTS catalogo_oficial_item_descricao_trgm_idx ' +
     'ON "CatalogoOficialItem" USING gin (descricao gin_trgm_ops)',
   );
-}
-
-async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<number> {
-  const linhas = await buscarTodasPaginas(urlBase);
-  if (linhas.length === 0) {
-    logger.warn(`Catálogo oficial (${tipo}): resposta recebida mas nenhum item reconhecido — confira o formato do JSON.`);
-    return 0;
-  }
-  await gravarLote(tipo, linhas);
-  return linhas.length;
 }
 
 export interface ResultadoSincronizacao {
@@ -157,11 +169,21 @@ export interface ResultadoSincronizacao {
  * porque o dado relevante para o usuário ("quando terminou", "quantos itens
  * tem hoje") continua vindo direto da tabela via `obterEstatisticasCatalogo`.
  */
+interface ProgressoSincronizacao {
+  tipo: 'MATERIAL' | 'SERVICO';
+  pagina: number;
+  processados: number;
+  totalEstimado: number | null;
+  itensPorSegundo: number;
+  segundosRestantesEstimados: number | null;
+}
+
 interface StatusSincronizacao {
   emAndamento: boolean;
   iniciadoEm: string | null;
   concluidoEm: string | null;
   ultimoResultado: ResultadoSincronizacao | null;
+  progresso: ProgressoSincronizacao | null;
 }
 
 const statusAtual: StatusSincronizacao = {
@@ -169,7 +191,30 @@ const statusAtual: StatusSincronizacao = {
   iniciadoEm: null,
   concluidoEm: null,
   ultimoResultado: null,
+  progresso: null,
 };
+
+/** Marca o início de cada tipo para calcular itens/segundo e ETA. */
+let inicioTipoAtualMs: number | null = null;
+
+function atualizarProgresso(p: { tipo: 'MATERIAL' | 'SERVICO'; pagina: number; processados: number; totalEstimado: number | null }): void {
+  if (p.pagina === 1) inicioTipoAtualMs = Date.now();
+  const decorridoS = inicioTipoAtualMs ? (Date.now() - inicioTipoAtualMs) / 1000 : 0;
+  const itensPorSegundo = decorridoS > 0 ? p.processados / decorridoS : 0;
+  const segundosRestantesEstimados =
+    p.totalEstimado && itensPorSegundo > 0
+      ? Math.max(0, Math.round((p.totalEstimado - p.processados) / itensPorSegundo))
+      : null;
+
+  statusAtual.progresso = {
+    tipo: p.tipo,
+    pagina: p.pagina,
+    processados: p.processados,
+    totalEstimado: p.totalEstimado,
+    itensPorSegundo: Math.round(itensPorSegundo * 10) / 10,
+    segundosRestantesEstimados,
+  };
+}
 
 export function obterStatusSincronizacao(): StatusSincronizacao {
   return { ...statusAtual };
@@ -206,6 +251,7 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
   statusAtual.emAndamento = false;
   statusAtual.concluidoEm = new Date().toISOString();
   statusAtual.ultimoResultado = resultado;
+  statusAtual.progresso = null;
 
   return resultado;
 }

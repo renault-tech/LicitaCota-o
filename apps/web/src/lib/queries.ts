@@ -147,6 +147,14 @@ export interface StatusCatalogo {
     iniciadoEm: string | null;
     concluidoEm: string | null;
     ultimoResultado: { materiais: number; servicos: number; erro: string | null } | null;
+    progresso: {
+      tipo: 'MATERIAL' | 'SERVICO';
+      pagina: number;
+      processados: number;
+      totalEstimado: number | null;
+      itensPorSegundo: number;
+      segundosRestantesEstimados: number | null;
+    } | null;
   };
 }
 
@@ -157,7 +165,7 @@ export function useStatusCatalogo() {
     // Repolling curto enquanto uma sincronização está em andamento — some
     // sozinho quando não há nada rodando (refetchInterval recebe o próprio
     // resultado da última busca).
-    refetchInterval: (query) => (query.state.data?.sincronizacao.emAndamento ? 5000 : false),
+    refetchInterval: (query) => (query.state.data?.sincronizacao.emAndamento ? 2000 : false),
   });
 }
 

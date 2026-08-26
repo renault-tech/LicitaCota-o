@@ -13,6 +13,14 @@ import type { TipoFonte } from '@/types/api';
 
 const TIPO_ICON = { API_REST: Globe, SCRAPING: Zap, TABELA_REFERENCIA: Table };
 const TIPO_LABEL: Record<TipoFonte, string> = { API_REST: 'API REST', SCRAPING: 'Scraping', TABELA_REFERENCIA: 'Tabela' };
+const TIPO_CATALOGO_LABEL = { MATERIAL: 'materiais', SERVICO: 'serviços' };
+
+function formatSegundos(s: number): string {
+  if (s < 60) return `${s}s`;
+  const min = Math.floor(s / 60);
+  const seg = s % 60;
+  return seg > 0 ? `${min}min ${seg}s` : `${min}min`;
+}
 
 export default function FontesPage() {
   const { data: fontes, isLoading, isError, error, refetch } = useFontes();
@@ -101,6 +109,33 @@ export default function FontesPage() {
               </button>
             )}
           </div>
+
+          {catalogo.sincronizacao.emAndamento && catalogo.sincronizacao.progresso && (() => {
+            const p = catalogo.sincronizacao.progresso;
+            const pct = p.totalEstimado ? Math.min(100, Math.round((p.processados / p.totalEstimado) * 100)) : null;
+            return (
+              <div className="w-full mt-1">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
+                  <span>
+                    Baixando {TIPO_CATALOGO_LABEL[p.tipo]} — página {p.pagina} · {p.processados.toLocaleString('pt-BR')}
+                    {p.totalEstimado ? ` de ~${p.totalEstimado.toLocaleString('pt-BR')}` : ''}
+                    {pct !== null && ` (${pct}%)`}
+                  </span>
+                  <span>
+                    {p.itensPorSegundo > 0 && `${p.itensPorSegundo.toLocaleString('pt-BR')}/s`}
+                    {p.segundosRestantesEstimados !== null && ` · ~${formatSegundos(p.segundosRestantesEstimados)} restantes`}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                  {pct !== null ? (
+                    <div className="h-full rounded-full bg-blue-500 transition-all duration-300" style={{ width: `${pct}%` }} />
+                  ) : (
+                    <div className="h-full w-1/3 rounded-full bg-blue-500 animate-pulse" />
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {!catalogo.sincronizacao.emAndamento && catalogo.sincronizacao.ultimoResultado?.erro && (
             <p className="w-full text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 mt-1">
