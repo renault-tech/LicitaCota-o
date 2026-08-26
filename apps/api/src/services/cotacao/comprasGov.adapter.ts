@@ -2,7 +2,7 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { resolverCodigoCatalogo } from '../catalogo/catalogoMatch.service.js';
+import { resolverCandidatosCatalogo, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
 
 /**
@@ -13,10 +13,15 @@ import type { FonteAdapter } from './adapter.js';
  * parâmetro válido; confirmado contra a documentação pública, que só lista
  * `codigoItemCatalogo` como filtro de item).
  *
- * Por isso, antes de consultar preço, resolvemos a descrição do item para um
- * código via `resolverCodigoCatalogo` — busca 100% local contra o catálogo
- * oficial sincronizado (ver catalogoSync.service.ts), sem chamada externa
- * nessa etapa. Sem um código resolvido com confiança suficiente, a fonte
+ * Por isso, antes de consultar preço, resolvemos a descrição do item para
+ * uma lista de códigos candidatos via `resolverCandidatosCatalogo` — busca
+ * 100% local contra o catálogo oficial sincronizado (ver
+ * catalogoSync.service.ts), sem chamada externa nessa etapa. O catálogo tem
+ * centenas de milhares de códigos, muitos quase idênticos (variações de
+ * cor/material de um mesmo item); o Painel de Preços só tem histórico para
+ * códigos já efetivamente comprados, então tentamos os candidatos em ordem
+ * de score até um devolver preço real, em vez de parar no melhor match
+ * textual isolado. Sem nenhum candidato com confiança suficiente, a fonte
  * não retorna preço para este item (evita citar preço de item errado).
  */
 
@@ -71,13 +76,11 @@ function descricaoDe(r: ResultadoBruto): string {
   return r.descricaoItem ?? r.descricao ?? '';
 }
 
-async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null }> {
-  const resolvido = await resolverCodigoCatalogo(item.descricaoNormalizada, 'MATERIAL');
-  if (!resolvido) return { pontos: [], codigoResolvido: null };
+const MAX_CANDIDATOS_TENTADOS = 5;
 
-  const resultados = await buscarPorCodigo(resolvido.codigo, item.uf, Math.max(limite * 10, 50));
+/** Monta os PontoPreco a partir dos resultados brutos de um código específico. */
+function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoBruto[], limite: number): PontoPreco[] {
   const pontosPorFonte = new Map<string, PontoPreco>();
-
   for (const r of resultados) {
     if (pontosPorFonte.size >= limite) break;
     const preco = precoDe(r);
@@ -95,8 +98,28 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ po
       dadosBrutos: { codigoItemCatalogo: resolvido.codigo, scoreResolucaoCodigo: resolvido.score, descricaoCandidata: descricaoDe(r) },
     });
   }
+  return [...pontosPorFonte.values()];
+}
 
-  return { pontos: [...pontosPorFonte.values()], codigoResolvido: resolvido.codigo };
+/**
+ * Tenta os candidatos de código em ordem de score até um devolver preço de
+ * verdade — o melhor match textual pode ser um código que nunca foi
+ * comprado (sem histórico no Painel de Preços), enquanto um candidato
+ * ligeiramente pior tem. Para no primeiro que retorna algo.
+ */
+async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null }> {
+  const candidatos = await resolverCandidatosCatalogo(item.descricaoNormalizada, 'MATERIAL');
+  if (candidatos.length === 0) return { pontos: [], codigoResolvido: null };
+
+  for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_TENTADOS)) {
+    const resultados = await buscarPorCodigo(candidato.codigo, item.uf, Math.max(limite * 10, 50));
+    const pontos = montarPontos(candidato, resultados, limite);
+    if (pontos.length > 0) return { pontos, codigoResolvido: candidato.codigo };
+  }
+
+  // Nenhum candidato teve preço registrado — reporta o melhor código
+  // resolvido mesmo assim, para aparecer no log/diagnóstico.
+  return { pontos: [], codigoResolvido: candidatos[0].codigo };
 }
 
 export const comprasGovAdapter: FonteAdapter = {
@@ -122,29 +145,39 @@ export const comprasGovAdapter: FonteAdapter = {
   async testar(_config: FonteCotacao, itemAmostra: string): Promise<TesteResultado> {
     const inicio = Date.now();
     try {
-      const resolvido = await resolverCodigoCatalogo(itemAmostra, 'MATERIAL');
-      if (!resolvido) {
+      const candidatos = await resolverCandidatosCatalogo(itemAmostra, 'MATERIAL');
+      if (candidatos.length === 0) {
         return {
           ok: false,
           latenciaMs: Date.now() - inicio,
           amostraPreco: null,
           amostraReferencia: null,
-          mensagem: `Não foi possível resolver "${itemAmostra}" para um código de catálogo. Confira se o catálogo oficial já foi sincronizado (ver Configurações).`,
+          mensagem: `Não foi possível resolver "${itemAmostra}" para um código de catálogo. Confira se o catálogo oficial já foi sincronizado (ver Fontes).`,
           dadosBrutos: null,
         };
       }
-      const resultados = await buscarPorCodigo(resolvido.codigo, undefined, 10);
+
+      let resultados: ResultadoBruto[] = [];
+      let usado = candidatos[0];
+      let tentativas = 0;
+      for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_TENTADOS)) {
+        tentativas++;
+        resultados = await buscarPorCodigo(candidato.codigo, undefined, 10);
+        usado = candidato;
+        if (resultados.length > 0) break;
+      }
+
       const latenciaMs = Date.now() - inicio;
       const amostra = resultados.find((r) => precoDe(r) && precoDe(r)! > 0);
       return {
         ok: true,
         latenciaMs,
         amostraPreco: amostra ? precoDe(amostra)! : null,
-        amostraReferencia: amostra ? descricaoDe(amostra) : `código ${resolvido.codigo} — ${resolvido.descricaoCatalogo}`,
+        amostraReferencia: amostra ? descricaoDe(amostra) : `código ${usado.codigo} — ${usado.descricaoCatalogo}`,
         mensagem: resultados.length > 0
-          ? `Compras.gov.br acessível — ${resultados.length} resultado(s) para código ${resolvido.codigo} ("${resolvido.descricaoCatalogo}") em ${latenciaMs}ms.`
-          : `Compras.gov.br respondeu, mas sem preços para o código ${resolvido.codigo} ("${resolvido.descricaoCatalogo}").`,
-        dadosBrutos: { codigoItemCatalogo: resolvido.codigo, totalResultados: resultados.length },
+          ? `Compras.gov.br acessível — ${resultados.length} resultado(s) para código ${usado.codigo} ("${usado.descricaoCatalogo}") em ${latenciaMs}ms (${tentativas} candidato(s) testado(s)).`
+          : `Compras.gov.br acessível, mas nenhum dos ${tentativas} candidato(s) de código para "${itemAmostra}" tem preço registrado no Painel de Preços.`,
+        dadosBrutos: { codigoItemCatalogo: usado.codigo, totalResultados: resultados.length, candidatosTentados: tentativas },
       };
     } catch (e) {
       return {

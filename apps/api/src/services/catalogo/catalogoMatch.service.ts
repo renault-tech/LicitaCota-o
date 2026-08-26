@@ -20,12 +20,22 @@ export interface CodigoCatalogoResolvido {
   score: number;
 }
 
-export async function resolverCodigoCatalogo(
+/**
+ * Devolve todos os candidatos acima do limiar, do mais provável ao menos —
+ * não só o primeiro. O catálogo tem centenas de milhares de códigos, muitos
+ * quase idênticos entre si (variações de cor/material/ponta de uma mesma
+ * "caneta esferográfica", por exemplo); o Painel de Preços só tem histórico
+ * para os códigos que já foram efetivamente comprados, então o candidato
+ * com melhor score textual pode não ter nenhum preço registrado enquanto
+ * um candidato levemente pior tem. O chamador tenta a lista em ordem até
+ * achar um com preço de verdade, em vez de desistir no primeiro.
+ */
+export async function resolverCandidatosCatalogo(
   descricaoItem: string,
   tipo: 'MATERIAL' | 'SERVICO' = 'MATERIAL',
-): Promise<CodigoCatalogoResolvido | null> {
+): Promise<CodigoCatalogoResolvido[]> {
   const busca = normalizarChave(descricaoItem);
-  if (!busca) return null;
+  if (!busca) return [];
 
   const candidatos = await prisma.$queryRawUnsafe<Array<{ codigo: number; descricao: string }>>(
     `SELECT codigo, descricao FROM "CatalogoOficialItem"
@@ -36,14 +46,17 @@ export async function resolverCodigoCatalogo(
     busca,
     CANDIDATOS_TRIGRAM,
   );
-  if (candidatos.length === 0) return null;
 
-  let melhor: CodigoCatalogoResolvido | null = null;
-  for (const c of candidatos) {
-    const score = pontuarCorrespondencia(busca, c.descricao);
-    if (score >= LIMIAR_FINAL && (!melhor || score > melhor.score)) {
-      melhor = { codigo: c.codigo, tipo, descricaoCatalogo: c.descricao, score };
-    }
-  }
-  return melhor;
+  return candidatos
+    .map((c) => ({ codigo: c.codigo, tipo, descricaoCatalogo: c.descricao, score: pontuarCorrespondencia(busca, c.descricao) }))
+    .filter((c) => c.score >= LIMIAR_FINAL)
+    .sort((a, b) => b.score - a.score);
+}
+
+export async function resolverCodigoCatalogo(
+  descricaoItem: string,
+  tipo: 'MATERIAL' | 'SERVICO' = 'MATERIAL',
+): Promise<CodigoCatalogoResolvido | null> {
+  const candidatos = await resolverCandidatosCatalogo(descricaoItem, tipo);
+  return candidatos[0] ?? null;
 }

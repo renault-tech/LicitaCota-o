@@ -127,38 +127,101 @@ async function gravarEContar(tipo: 'MATERIAL' | 'SERVICO', brutos: ObjetoBruto[]
   return linhas.length;
 }
 
+// ─── Checkpoint de retomada ─────────────────────────────────────────────────
+// Persistido em banco (não em memória): sobrevive a um restart do processo,
+// que é exatamente o cenário que precisa cobrir (instância grátis do Render
+// reciclada no meio de uma sincronização longa). Guarda a última página
+// COMPLETA de forma contígua — sob concorrência, páginas terminam fora de
+// ordem, então "maior página vista" não é seguro: uma página menor ainda em
+// voo poderia nunca ter sido gravada. `RastreadorContiguo` resolve isso.
+
+async function obterCheckpoint(tipo: 'MATERIAL' | 'SERVICO'): Promise<{ ultimaPagina: number; totalEstimado: number | null } | null> {
+  const linha = await prisma.catalogoSincronizacaoEstado.findUnique({ where: { tipo } });
+  return linha ? { ultimaPagina: linha.ultimaPagina, totalEstimado: linha.totalEstimado } : null;
+}
+
+async function salvarCheckpoint(tipo: 'MATERIAL' | 'SERVICO', ultimaPagina: number, totalEstimado: number | null): Promise<void> {
+  await prisma.catalogoSincronizacaoEstado.upsert({
+    where: { tipo },
+    update: { ultimaPagina, totalEstimado },
+    create: { tipo, ultimaPagina, totalEstimado },
+  });
+}
+
+async function limparCheckpoint(tipo: 'MATERIAL' | 'SERVICO'): Promise<void> {
+  await prisma.catalogoSincronizacaoEstado.deleteMany({ where: { tipo } });
+}
+
+/** Acompanha conclusão de páginas fora de ordem e avança um marco só quando o intervalo fica contíguo. */
+class RastreadorContiguo {
+  private concluidas = new Set<number>();
+  marco: number;
+
+  constructor(marcoInicial: number) {
+    this.marco = marcoInicial;
+  }
+
+  marcarConcluida(pagina: number): void {
+    this.concluidas.add(pagina);
+    while (this.concluidas.has(this.marco + 1)) {
+      this.marco++;
+      this.concluidas.delete(this.marco);
+    }
+  }
+}
+
 /**
  * Pagina até a API devolver uma página vazia/menor que o pedido, ou até o
  * teto de segurança — grava cada página assim que chega (não acumula tudo
- * em memória para gravar no final), para que o progresso visível na tela de
- * Fontes avance em tempo real e uma interrupção no meio não perca o que já
- * foi baixado.
+ * em memória para gravar no final) e salva um checkpoint contíguo a cada
+ * página concluída, para que uma sincronização interrompida (ex.: a
+ * instância grátis do Render reciclando o processo) retome de onde parou
+ * em vez de rebaixar tudo de novo.
  *
- * Busca a página 1 sozinha primeiro (para descobrir o total, se a API
- * informar). Com o total em mãos, busca o resto em paralelo (algumas
- * páginas por vez) — é isso que reduz o tempo total de forma relevante,
- * já que o gargalo é esperar cada requisição de rede, não o processamento
- * local. Sem total conhecido, cai para busca sequencial (mais segura,
- * porque não dá pra saber de antemão quantas páginas existem).
+ * Com checkpoint salvo, pula direto para a busca paralela a partir da
+ * página seguinte. Sem checkpoint, busca a página 1 sozinha primeiro (para
+ * descobrir o total, se a API informar) e então dispara o resto em
+ * paralelo — o gargalo é esperar cada requisição de rede, não o
+ * processamento local. Sem total conhecido (nem salvo, nem na resposta),
+ * cai para busca sequencial, mais segura por não saber de antemão quantas
+ * páginas existem.
  */
-async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<number> {
+async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Promise<void> {
   let processados = 0;
+  const checkpoint = await obterCheckpoint(tipo);
 
-  const primeira = await buscarPagina(urlBase, 1);
-  const totalEstimado = primeira.totalRegistros;
-  if (primeira.brutos.length > 0) {
-    const contagem = await gravarEContar(tipo, primeira.brutos);
-    processados += contagem;
-    atualizarProgresso({ tipo, pagina: 1, processados, totalEstimado });
+  let totalEstimado = checkpoint?.totalEstimado ?? null;
+  let paginaInicialParalelo = 2;
+
+  if (!checkpoint) {
+    const primeira = await buscarPagina(urlBase, 1);
+    totalEstimado = primeira.totalRegistros;
+    if (primeira.brutos.length > 0) {
+      const contagem = await gravarEContar(tipo, primeira.brutos);
+      processados += contagem;
+      atualizarProgresso({ tipo, pagina: 1, processados, totalEstimado });
+    }
+    if (totalEstimado) await salvarCheckpoint(tipo, 1, totalEstimado);
+
+    if (primeira.brutos.length === 0 || primeira.brutos.length < TAMANHO_PAGINA_API) {
+      await limparCheckpoint(tipo);
+      if (processados === 0) logger.warn(`Catálogo oficial (${tipo}): resposta recebida mas nenhum item reconhecido — confira o formato do JSON.`);
+      return;
+    }
+  } else {
+    paginaInicialParalelo = checkpoint.ultimaPagina + 1;
+    logger.info(`Catálogo oficial (${tipo}): retomando da página ${paginaInicialParalelo} (checkpoint salvo).`);
   }
 
-  const paraQuePagina1JaBaste = primeira.brutos.length === 0 || primeira.brutos.length < TAMANHO_PAGINA_API;
-
-  if (!paraQuePagina1JaBaste && totalEstimado) {
-    // Total conhecido: dispara o resto das páginas em paralelo, respeitando ordem só para o contador de "página atual" exibido.
+  if (totalEstimado) {
     const totalPaginas = Math.min(MAX_PAGINAS, Math.ceil(totalEstimado / TAMANHO_PAGINA_API));
-    let proximaPagina = 2;
-    let maiorPaginaConcluida = 1;
+    if (paginaInicialParalelo > totalPaginas) {
+      await limparCheckpoint(tipo);
+      return;
+    }
+
+    let proximaPagina = paginaInicialParalelo;
+    const rastreador = new RastreadorContiguo(paginaInicialParalelo - 1);
 
     async function worker(): Promise<void> {
       while (true) {
@@ -166,36 +229,37 @@ async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Pro
         if (pagina > totalPaginas) return;
         const { brutos } = await buscarPagina(urlBase, pagina);
         if (brutos.length > 0) {
-          // Nunca `processados += await ...` aqui: isso lê o valor de
-          // processados ANTES do await suspender — com workers concorrentes,
-          // o valor lido fica desatualizado e um worker sobrescreve o
-          // incremento do outro ao retomar. Precisa ler processados só
-          // depois que o await já terminou.
+          // Nunca `processados += await ...`: isso lê o valor de processados
+          // ANTES do await suspender — com workers concorrentes, o valor lido
+          // fica desatualizado e um worker sobrescreve o incremento do outro
+          // ao retomar. Precisa ler processados só depois que o await terminou.
           const contagem = await gravarEContar(tipo, brutos);
           processados += contagem;
         }
-        maiorPaginaConcluida = Math.max(maiorPaginaConcluida, pagina);
-        atualizarProgresso({ tipo, pagina: maiorPaginaConcluida, processados, totalEstimado });
+        rastreador.marcarConcluida(pagina);
+        atualizarProgresso({ tipo, pagina: rastreador.marco, processados, totalEstimado });
+        await salvarCheckpoint(tipo, rastreador.marco, totalEstimado);
       }
     }
 
-    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_PAGINAS, totalPaginas - 1) }, worker));
-  } else if (!paraQuePagina1JaBaste) {
+    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_PAGINAS, totalPaginas - paginaInicialParalelo + 1) }, worker));
+  } else {
     // Total desconhecido: sequencial, para poder parar exatamente na primeira página vazia/parcial.
-    for (let pagina = 2; pagina <= MAX_PAGINAS; pagina++) {
+    for (let pagina = paginaInicialParalelo; pagina <= MAX_PAGINAS; pagina++) {
       const { brutos } = await buscarPagina(urlBase, pagina);
       if (brutos.length === 0) break;
       const contagem = await gravarEContar(tipo, brutos);
       processados += contagem;
       atualizarProgresso({ tipo, pagina, processados, totalEstimado: null });
+      await salvarCheckpoint(tipo, pagina, null);
       if (brutos.length < TAMANHO_PAGINA_API) break;
     }
   }
 
-  if (processados === 0) {
+  await limparCheckpoint(tipo);
+  if (processados === 0 && !checkpoint) {
     logger.warn(`Catálogo oficial (${tipo}): resposta recebida mas nenhum item reconhecido — confira o formato do JSON.`);
   }
-  return processados;
 }
 
 async function garantirIndiceTrigram(): Promise<void> {
@@ -277,8 +341,6 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
 
   await garantirIndiceTrigram();
 
-  let materiais = 0;
-  let servicos = 0;
   const erros: string[] = [];
 
   // CATSER primeiro: bem menor que o CATMAT, termina rápido. Se a instância
@@ -287,18 +349,24 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
   // então nada garante que o processo sobrevive até o fim), pelo menos os
   // serviços já estarão completos em vez de ficarem em zero.
   try {
-    servicos = await sincronizarUm('SERVICO', URL_SERVICOS);
+    await sincronizarUm('SERVICO', URL_SERVICOS);
   } catch (e) {
     erros.push(e instanceof Error ? e.message : String(e));
     logger.error('Falha ao sincronizar CATSER', e);
   }
 
   try {
-    materiais = await sincronizarUm('MATERIAL', URL_MATERIAIS);
+    await sincronizarUm('MATERIAL', URL_MATERIAIS);
   } catch (e) {
     erros.push(e instanceof Error ? e.message : String(e));
     logger.error('Falha ao sincronizar CATMAT', e);
   }
+
+  // Conta direto na tabela em vez de somar o que cada chamada devolveu:
+  // com retomada por checkpoint, uma sincronização pode cobrir só parte das
+  // páginas nesta execução — o total real de itens é o que está no banco.
+  const estatisticas = await obterEstatisticasCatalogo();
+  const { materiais, servicos } = estatisticas;
 
   logger.info(`Catálogo oficial sincronizado: ${materiais} materiais, ${servicos} serviços.`);
   const resultado = { materiais, servicos, erro: erros.length > 0 ? erros.join(' | ') : null };
