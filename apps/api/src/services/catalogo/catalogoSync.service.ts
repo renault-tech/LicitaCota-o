@@ -166,8 +166,36 @@ export interface ResultadoSincronizacao {
   erro: string | null;
 }
 
+/**
+ * Status em memória da sincronização — instância única (Render), mesmo
+ * padrão do progressStore usado pelo processamento de pesquisas. Não
+ * persiste em banco: reinicia ao reiniciar o servidor, mas isso é aceitável
+ * porque o dado relevante para o usuário ("quando terminou", "quantos itens
+ * tem hoje") continua vindo direto da tabela via `obterEstatisticasCatalogo`.
+ */
+interface StatusSincronizacao {
+  emAndamento: boolean;
+  iniciadoEm: string | null;
+  concluidoEm: string | null;
+  ultimoResultado: ResultadoSincronizacao | null;
+}
+
+const statusAtual: StatusSincronizacao = {
+  emAndamento: false,
+  iniciadoEm: null,
+  concluidoEm: null,
+  ultimoResultado: null,
+};
+
+export function obterStatusSincronizacao(): StatusSincronizacao {
+  return { ...statusAtual };
+}
+
 /** Sincroniza CATMAT e CATSER. Falha em um não impede o outro. */
 export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
+  statusAtual.emAndamento = true;
+  statusAtual.iniciadoEm = new Date().toISOString();
+
   await garantirIndiceTrigram();
 
   let materiais = 0;
@@ -189,10 +217,38 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
   }
 
   logger.info(`Catálogo oficial sincronizado: ${materiais} materiais, ${servicos} serviços.`);
-  return { materiais, servicos, erro: erros.length > 0 ? erros.join(' | ') : null };
+  const resultado = { materiais, servicos, erro: erros.length > 0 ? erros.join(' | ') : null };
+
+  statusAtual.emAndamento = false;
+  statusAtual.concluidoEm = new Date().toISOString();
+  statusAtual.ultimoResultado = resultado;
+
+  return resultado;
+}
+
+/** Dispara a sincronização em segundo plano — não faz nada se já houver uma em andamento. */
+export function dispararSincronizacaoEmBackground(): boolean {
+  if (statusAtual.emAndamento) return false;
+  sincronizarCatalogo().catch((e) => logger.error('Falha na sincronização do catálogo oficial', e));
+  return true;
 }
 
 export async function catalogoEstaVazio(): Promise<boolean> {
   const total = await prisma.catalogoOficialItem.count();
   return total === 0;
+}
+
+export interface EstatisticasCatalogo {
+  materiais: number;
+  servicos: number;
+  ultimaAtualizacao: string | null;
+}
+
+export async function obterEstatisticasCatalogo(): Promise<EstatisticasCatalogo> {
+  const [materiais, servicos, ultimo] = await Promise.all([
+    prisma.catalogoOficialItem.count({ where: { tipo: 'MATERIAL' } }),
+    prisma.catalogoOficialItem.count({ where: { tipo: 'SERVICO' } }),
+    prisma.catalogoOficialItem.findFirst({ orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } }),
+  ]);
+  return { materiais, servicos, ultimaAtualizacao: ultimo?.updatedAt.toISOString() ?? null };
 }

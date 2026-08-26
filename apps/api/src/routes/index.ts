@@ -9,6 +9,7 @@ import fornecedoresRouter from './fornecedores.js';
 import auditoriaRouter from './auditoria.js';
 import debugRouter from './debug.js';
 import cotacaoPublicaRouter from './cotacaoPublica.js';
+import catalogoRouter from './catalogo.js';
 
 export function registrarRotas(app: Express): void {
   app.use('/api/auth', authRouter);
@@ -21,6 +22,7 @@ export function registrarRotas(app: Express): void {
   app.use('/api/auditoria', auditoriaRouter);
   app.use('/api/debug', debugRouter);
   app.use('/api/cotar', cotacaoPublicaRouter);
+  app.use('/api/catalogo', catalogoRouter);
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, timestamp: new Date().toISOString() });

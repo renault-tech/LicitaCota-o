@@ -1,12 +1,13 @@
 'use client';
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table } from 'lucide-react';
+import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen } from 'lucide-react';
 import { toast } from 'sonner';
-import { useFontes, useTestarFonte, useAtivarFonte } from '@/lib/queries';
+import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo } from '@/lib/queries';
 import { FonteBadge } from '@/components/common/StatusBadge';
 import EmptyState from '@/components/common/EmptyState';
 import ErrorState from '@/components/common/ErrorState';
+import { useAuthStore } from '@/lib/auth';
 import { formatDate, cn } from '@/lib/utils';
 import type { TipoFonte } from '@/types/api';
 
@@ -17,8 +18,22 @@ export default function FontesPage() {
   const { data: fontes, isLoading, isError, error, refetch } = useFontes();
   const testar = useTestarFonte();
   const ativar = useAtivarFonte();
+  const { usuario } = useAuthStore();
+  const { data: catalogo } = useStatusCatalogo();
+  const sincronizarCatalogo = useSincronizarCatalogo();
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string; latencia: number }>>({});
   const [testando, setTestando] = useState<string | null>(null);
+
+  async function handleSincronizarCatalogo() {
+    try {
+      const res = await sincronizarCatalogo.mutateAsync();
+      toast[res.disparou ? 'success' : 'info'](
+        res.disparou ? 'Sincronização do catálogo iniciada.' : 'Uma sincronização já está em andamento.',
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erro ao iniciar sincronização');
+    }
+  }
 
   async function handleTestar(id: string) {
     setTestando(id);
@@ -47,6 +62,49 @@ export default function FontesPage() {
           <p className="text-sm text-zinc-500 mt-0.5">Configure as fontes consultadas durante o processamento</p>
         </div>
       </div>
+
+      {catalogo && (
+        <div className="card mb-6 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center flex-shrink-0">
+              <BookOpen className="w-5 h-5 text-indigo-500" strokeWidth={1.5} />
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-sm text-zinc-900 dark:text-white">Catálogo oficial CATMAT/CATSER</p>
+              <p className="text-xs text-zinc-400">
+                {catalogo.materiais.toLocaleString('pt-BR')} materiais · {catalogo.servicos.toLocaleString('pt-BR')} serviços
+                {catalogo.ultimaAtualizacao && <> · atualizado em {formatDate(catalogo.ultimaAtualizacao)}</>}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {catalogo.sincronizacao.emAndamento ? (
+              <span className="flex items-center gap-1.5 text-xs text-blue-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Sincronizando...
+              </span>
+            ) : catalogo.sincronizacao.ultimoResultado?.erro ? (
+              <span className="text-xs text-red-500" title={catalogo.sincronizacao.ultimoResultado.erro}>
+                Falha na última sincronização
+              </span>
+            ) : catalogo.materiais === 0 && catalogo.servicos === 0 ? (
+              <span className="text-xs text-amber-500">Ainda não sincronizado</span>
+            ) : null}
+
+            {usuario?.role === 'ADMIN' && (
+              <button
+                onClick={handleSincronizarCatalogo}
+                disabled={catalogo.sincronizacao.emAndamento || sincronizarCatalogo.isPending}
+                className="btn-ghost text-xs px-3 py-1.5"
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', catalogo.sincronizacao.emAndamento && 'animate-spin')} />
+                Sincronizar agora
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

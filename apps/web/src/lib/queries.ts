@@ -136,6 +136,39 @@ export function useAtivarFonte() {
   });
 }
 
+// ─── Catálogo oficial CATMAT/CATSER ────────────────────────────────────────
+
+export interface StatusCatalogo {
+  materiais: number;
+  servicos: number;
+  ultimaAtualizacao: string | null;
+  sincronizacao: {
+    emAndamento: boolean;
+    iniciadoEm: string | null;
+    concluidoEm: string | null;
+    ultimoResultado: { materiais: number; servicos: number; erro: string | null } | null;
+  };
+}
+
+export function useStatusCatalogo() {
+  return useQuery({
+    queryKey: ['catalogo-status'],
+    queryFn: () => apiFetch<StatusCatalogo>('/api/catalogo/status'),
+    // Repolling curto enquanto uma sincronização está em andamento — some
+    // sozinho quando não há nada rodando (refetchInterval recebe o próprio
+    // resultado da última busca).
+    refetchInterval: (query) => (query.state.data?.sincronizacao.emAndamento ? 5000 : false),
+  });
+}
+
+export function useSincronizarCatalogo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<{ ok: boolean; disparou: boolean }>('/api/catalogo/sincronizar', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['catalogo-status'] }),
+  });
+}
+
 // ─── Usuários ────────────────────────────────────────────────────────────────
 
 export function useUsuarios(pagina = 1) {
