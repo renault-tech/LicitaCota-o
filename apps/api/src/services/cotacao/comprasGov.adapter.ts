@@ -54,7 +54,12 @@ function extrairResultados(corpo: unknown): ResultadoBruto[] {
   return [];
 }
 
-async function buscarPorCodigo(codigoItemCatalogo: number, uf: string | undefined, tamanhoPagina: number): Promise<ResultadoBruto[]> {
+async function buscarPorCodigo(
+  codigoItemCatalogo: number,
+  uf: string | undefined,
+  tamanhoPagina: number,
+  opcoesRequisicao: { timeoutMs: number; retries: number } = { timeoutMs: 15000, retries: 1 },
+): Promise<ResultadoBruto[]> {
   const params = new URLSearchParams({
     pagina: '1',
     tamanhoPagina: String(tamanhoPagina),
@@ -62,7 +67,7 @@ async function buscarPorCodigo(codigoItemCatalogo: number, uf: string | undefine
   });
   if (uf) params.set('uf', uf);
   const url = `${BASE}/1_consultarMaterial?${params.toString()}`;
-  const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
+  const resp = await requisitar(url, opcoesRequisicao);
   // 404 aqui não é "endpoint errado" (path e parâmetros batem com a
   // documentação oficial) — é como essa API sinaliza "nenhum preço
   // registrado para este código de catálogo". Um código sem histórico de
@@ -82,6 +87,14 @@ function descricaoDe(r: ResultadoBruto): string {
 }
 
 const MAX_CANDIDATOS_TENTADOS = 5;
+/** Menor que MAX_CANDIDATOS_TENTADOS: usado só no caminho de cotação real
+ * (buscarPrecos), onde o pior caso multiplica por N itens em paralelo — o
+ * autoteste (testar()) mantém o valor mais generoso acima. */
+const MAX_CANDIDATOS_COTACAO = 3;
+/** Timeout/retries mais agressivos para o caminho de cotação: cada tentativa
+ * é uma sondagem "esse código tem preço?", não uma checagem de conectividade
+ * — não vale a pena pagar retry nem um timeout longo aqui. */
+const OPCOES_REQUISICAO_COTACAO = { timeoutMs: 6000, retries: 0 };
 
 /** Monta os PontoPreco a partir dos resultados brutos de um código específico. */
 function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoBruto[], limite: number): PontoPreco[] {
@@ -124,8 +137,8 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ po
   const candidatos = await resolverCandidatosCatalogoComFallback(item.descricaoNormalizada, 'MATERIAL');
   if (candidatos.length === 0) return { pontos: [], codigoResolvido: null };
 
-  for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_TENTADOS)) {
-    const resultados = await buscarPorCodigo(candidato.codigo, item.uf, Math.max(limite * 10, 50));
+  for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_COTACAO)) {
+    const resultados = await buscarPorCodigo(candidato.codigo, item.uf, Math.max(limite * 10, 50), OPCOES_REQUISICAO_COTACAO);
     const pontos = montarPontos(candidato, resultados, limite);
     if (pontos.length > 0) return { pontos, codigoResolvido: candidato.codigo };
   }
