@@ -11,10 +11,12 @@ import { normalizarChave } from '../../utils/texto.js';
  * ainda precisa ser confirmado contra a API oficial do Compras.gov.br antes
  * de virar um preço de verdade (ver comprasGov.adapter.ts).
  *
- * Desligado por padrão via CATMAT_FALLBACK_HABILITADO — os nomes de campo
- * da resposta não puderam ser confirmados contra a API real neste ambiente
- * de desenvolvimento (sem acesso à internet). Só ativar depois de validar
- * manualmente contra tráfego real de produção.
+ * Desligado por padrão via CATMAT_FALLBACK_HABILITADO. Formato da resposta
+ * confirmado contra uma chamada real (colada pelo usuário): embrulho em
+ * `{ total, hits: [...] }` (padrão Elasticsearch), item com `codigo_item` e
+ * `descricao_item`. Só ativar em produção depois de confirmar que o Render
+ * também alcança o domínio (a amostra veio do navegador do usuário, não do
+ * servidor).
  */
 
 const BASE = 'https://catmat.com.br/api/v1';
@@ -33,9 +35,12 @@ interface RespostaItem {
 
 function extrairPrimeiroItem(corpo: unknown): RespostaItem | null {
   if (Array.isArray(corpo)) return (corpo[0] as RespostaItem) ?? null;
-  const obj = corpo as { resultado?: unknown; data?: unknown; itens?: unknown } | null;
+  const obj = corpo as { hits?: unknown; resultado?: unknown; data?: unknown; itens?: unknown } | null;
   if (!obj) return null;
-  for (const chave of ['resultado', 'data', 'itens'] as const) {
+  // 'hits' é o formato confirmado contra uma resposta real (estilo
+  // Elasticsearch); as demais chaves ficam como tolerância a variações
+  // futuras da API, não foram observadas na prática.
+  for (const chave of ['hits', 'resultado', 'data', 'itens'] as const) {
     const lista = obj[chave];
     if (Array.isArray(lista)) return (lista[0] as RespostaItem) ?? null;
   }

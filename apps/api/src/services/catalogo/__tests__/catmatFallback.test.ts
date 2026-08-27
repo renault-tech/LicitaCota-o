@@ -28,12 +28,32 @@ describe('buscarCandidatoExterno', () => {
     expect(requisitar).not.toHaveBeenCalled();
   });
 
-  it('devolve o candidato quando a flag está ligada e a resposta é válida', async () => {
+  it('devolve o candidato quando a flag está ligada e a resposta é válida (formato real confirmado — embrulho em "hits")', async () => {
     envMock.CATMAT_FALLBACK_HABILITADO = 'true';
-    requisitar.mockResolvedValue(respostaOk({ resultado: [{ codigo_item: 470419, descricao_item: 'CANETA ESFEROGRAFICA AZUL' }] }));
+    // Amostra real da API, colada pelo usuário a partir de uma chamada de verdade.
+    requisitar.mockResolvedValue(respostaOk({
+      total: 2857,
+      hits: [
+        {
+          id: 'ouhM6Z0B2NBq6uGFQF0h',
+          score: 252.58571,
+          codigo_item: 279313,
+          descricao_item: 'CANETA MARCA-TEXTO, MATERIAL:PLÁSTICO, TIPO PONTA:FLUORESCENTE, COR:AMARELA',
+          nome_grupo: 'UTENSÍLIOS DE ESCRITÓRIO E MATERIAL DE EXPEDIENTE',
+          nome_classe: 'ARTIGOS PARA ESCRITÓRIO',
+          nome_pdm: 'CANETA MARCA-TEXTO',
+          codigo_pdm: 18075,
+          codigo_ncm: null,
+          likes: 0,
+        },
+      ],
+    }));
 
-    const resultado = await buscarCandidatoExterno('caneta esferográfica azul');
-    expect(resultado).toEqual({ codigo: 470419, descricaoCatalogo: 'CANETA ESFEROGRAFICA AZUL' });
+    const resultado = await buscarCandidatoExterno('caneta');
+    expect(resultado).toEqual({
+      codigo: 279313,
+      descricaoCatalogo: 'CANETA MARCA-TEXTO, MATERIAL:PLÁSTICO, TIPO PONTA:FLUORESCENTE, COR:AMARELA',
+    });
   });
 
   it('devolve null em HTTP não-2xx', async () => {
