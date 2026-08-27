@@ -149,7 +149,6 @@ export interface StatusCatalogo {
     ultimoResultado: { materiais: number; servicos: number; erro: string | null } | null;
     progresso: {
       tipo: 'MATERIAL' | 'SERVICO';
-      pagina: number;
       processados: number;
       totalEstimado: number | null;
       itensPorSegundo: number;
@@ -173,6 +172,19 @@ export function useSincronizarCatalogo() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => apiFetch<{ ok: boolean; disparou: boolean }>('/api/catalogo/sincronizar', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['catalogo-status'] }),
+  });
+}
+
+export function useImportarCatalogo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ tipo, arquivo }: { tipo: 'MATERIAL' | 'SERVICO'; arquivo: File }) => {
+      const form = new FormData();
+      form.append('tipo', tipo);
+      form.append('arquivo', arquivo);
+      return apiFetch<{ ok: boolean; tipo: string; processados: number }>('/api/catalogo/importar', { method: 'POST', body: form });
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['catalogo-status'] }),
   });
 }

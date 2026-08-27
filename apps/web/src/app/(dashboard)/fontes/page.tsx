@@ -1,9 +1,9 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen } from 'lucide-react';
+import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen, Upload } from 'lucide-react';
 import { toast } from 'sonner';
-import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo } from '@/lib/queries';
+import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo, useImportarCatalogo } from '@/lib/queries';
 import { FonteBadge } from '@/components/common/StatusBadge';
 import EmptyState from '@/components/common/EmptyState';
 import ErrorState from '@/components/common/ErrorState';
@@ -29,8 +29,11 @@ export default function FontesPage() {
   const { usuario } = useAuthStore();
   const { data: catalogo } = useStatusCatalogo();
   const sincronizarCatalogo = useSincronizarCatalogo();
+  const importarCatalogo = useImportarCatalogo();
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string; latencia: number }>>({});
   const [testando, setTestando] = useState<string | null>(null);
+  const [tipoImportar, setTipoImportar] = useState<'MATERIAL' | 'SERVICO'>('MATERIAL');
+  const inputArquivoRef = useRef<HTMLInputElement>(null);
 
   async function handleSincronizarCatalogo() {
     try {
@@ -40,6 +43,18 @@ export default function FontesPage() {
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Erro ao iniciar sincronização');
+    }
+  }
+
+  async function handleArquivoSelecionado(e: React.ChangeEvent<HTMLInputElement>) {
+    const arquivo = e.target.files?.[0];
+    e.target.value = '';
+    if (!arquivo) return;
+    try {
+      const res = await importarCatalogo.mutateAsync({ tipo: tipoImportar, arquivo });
+      toast.success(`Planilha importada — ${res.processados.toLocaleString('pt-BR')} itens.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao importar planilha');
     }
   }
 
@@ -99,14 +114,45 @@ export default function FontesPage() {
             ) : null}
 
             {usuario?.role === 'ADMIN' && (
-              <button
-                onClick={handleSincronizarCatalogo}
-                disabled={catalogo.sincronizacao.emAndamento || sincronizarCatalogo.isPending}
-                className="btn-ghost text-xs px-3 py-1.5"
-              >
-                <RefreshCw className={cn('w-3.5 h-3.5', catalogo.sincronizacao.emAndamento && 'animate-spin')} />
-                Sincronizar agora
-              </button>
+              <>
+                <button
+                  onClick={handleSincronizarCatalogo}
+                  disabled={catalogo.sincronizacao.emAndamento || sincronizarCatalogo.isPending}
+                  className="btn-ghost text-xs px-3 py-1.5"
+                >
+                  <RefreshCw className={cn('w-3.5 h-3.5', catalogo.sincronizacao.emAndamento && 'animate-spin')} />
+                  Sincronizar agora
+                </button>
+
+                <span className="text-zinc-200 dark:text-zinc-700">|</span>
+
+                <select
+                  value={tipoImportar}
+                  onChange={(e) => setTipoImportar(e.target.value as 'MATERIAL' | 'SERVICO')}
+                  disabled={importarCatalogo.isPending}
+                  className="text-xs bg-transparent border border-zinc-200 dark:border-zinc-700 rounded-lg px-2 py-1.5"
+                  title="Tipo da planilha a importar"
+                >
+                  <option value="MATERIAL">CATMAT (materiais)</option>
+                  <option value="SERVICO">CATSER (serviços)</option>
+                </select>
+                <input
+                  ref={inputArquivoRef}
+                  type="file"
+                  accept=".xlsx"
+                  className="hidden"
+                  onChange={handleArquivoSelecionado}
+                />
+                <button
+                  onClick={() => inputArquivoRef.current?.click()}
+                  disabled={importarCatalogo.isPending}
+                  className="btn-ghost text-xs px-3 py-1.5"
+                  title="Importar planilha .xlsx baixada manualmente do Portal de Compras"
+                >
+                  {importarCatalogo.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                  Importar planilha
+                </button>
+              </>
             )}
           </div>
 
@@ -117,7 +163,7 @@ export default function FontesPage() {
               <div className="w-full mt-1">
                 <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
                   <span>
-                    Baixando {TIPO_CATALOGO_LABEL[p.tipo]} — página {p.pagina} · {p.processados.toLocaleString('pt-BR')}
+                    Importando {TIPO_CATALOGO_LABEL[p.tipo]} — {p.processados.toLocaleString('pt-BR')}
                     {p.totalEstimado ? ` de ~${p.totalEstimado.toLocaleString('pt-BR')}` : ''}
                     {pct !== null && ` (${pct}%)`}
                   </span>

@@ -370,20 +370,6 @@ model CatalogoOficialItem {
   @@index([tipo, ativo])
 }
 
-// Checkpoint da sincronização do catálogo oficial — permite retomar de onde
-// parou em vez de rebaixar todas as páginas do zero a cada clique em
-// "Sincronizar agora", já que a instância grátis do Render pode reciclar o
-// processo no meio de uma sincronização longa (sem requisição HTTP entrando
-// para "segurar" a instância acordada). Apagado quando uma sincronização
-// termina o catálogo inteiro com sucesso — a próxima é do zero de novo, para
-// também capturar itens removidos/alterados, não só os novos.
-model CatalogoSincronizacaoEstado {
-  tipo          TipoCatalogoOficial @id
-  ultimaPagina  Int
-  totalEstimado Int?
-  atualizadoEm  DateTime            @updatedAt
-}
-
 model ItemCatalogo {
   id                    String    @id @default(uuid())
   nomeNormalizado       String    @unique
