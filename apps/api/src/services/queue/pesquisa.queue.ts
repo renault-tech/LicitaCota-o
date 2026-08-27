@@ -9,6 +9,14 @@ export interface PesquisaJobData {
   autorId: string;
 }
 
+// Conexão do PRODUTOR (Queue.add()) — diferente da do Worker em
+// worker.runner.ts. `maxRetriesPerRequest: null` é a recomendação do BullMQ
+// para o Worker (comandos bloqueantes não podem falhar), mas aplicada aqui
+// faz o comando `add()` retentar indefinidamente e NUNCA lançar erro se o
+// Redis estiver inacessível — o `await` trava para sempre, o catch abaixo
+// (que existe para acionar o fallback local) nunca é alcançado. Por isso o
+// produtor usa um limite finito de retentativas e timeout de conexão curto,
+// para falhar rápido e cair no fallback.
 function parseRedisConnection(url: string) {
   try {
     const u = new URL(url);
@@ -19,14 +27,24 @@ function parseRedisConnection(url: string) {
       password: u.password || undefined,
       username: u.username || undefined,
       db: Number(u.pathname.slice(1)) || 0,
-      maxRetriesPerRequest: null as null,
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+      connectTimeout: 3000,
       enableReadyCheck: false,
       lazyConnect: true,
       ...(isTls ? { tls: {} } : {}),
     };
   } catch {
     logger.warn('REDIS_URL inválida, usando localhost:6379');
-    return { host: 'localhost', port: 6379, maxRetriesPerRequest: null as null, enableReadyCheck: false, lazyConnect: true };
+    return {
+      host: 'localhost',
+      port: 6379,
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+      connectTimeout: 3000,
+      enableReadyCheck: false,
+      lazyConnect: true,
+    };
   }
 }
 
@@ -53,12 +71,20 @@ export async function enfileirarPesquisa(pesquisaId: string, autorId: string): P
     // chama esta função já impede reprocessamento concorrente checando
     // status === 'PROCESSANDO' antes de enfileirar.
     const jobId = `${pesquisaId}:${Date.now()}`;
-    const job = await getPesquisaQueue().add(
-      'processar',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { pesquisaId, autorId } as any,
-      { attempts: 1, jobId, removeOnComplete: 50, removeOnFail: 100 },
-    );
+    // Timeout explícito além da configuração de conexão acima — cinto e
+    // suspensório contra qualquer combinação de opções do ioredis que ainda
+    // deixe add() pendurado em vez de rejeitar.
+    const job = await Promise.race([
+      getPesquisaQueue().add(
+        'processar',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { pesquisaId, autorId } as any,
+        { attempts: 1, jobId, removeOnComplete: 50, removeOnFail: 100 },
+      ),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout ao enfileirar no Redis (5000ms).')), 5000);
+      }),
+    ]);
     return job.id ?? '';
   } catch (err) {
     // Redis indisponível — processa diretamente em background (sem fila)
