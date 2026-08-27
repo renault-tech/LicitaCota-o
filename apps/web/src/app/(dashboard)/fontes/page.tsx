@@ -1,7 +1,7 @@
 'use client';
 import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen, Upload } from 'lucide-react';
+import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen, Upload, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo, useImportarCatalogo } from '@/lib/queries';
 import { FonteBadge } from '@/components/common/StatusBadge';
@@ -152,6 +152,15 @@ export default function FontesPage() {
                   {importarCatalogo.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                   Importar planilha
                 </button>
+                <a
+                  href="https://www.gov.br/compras/pt-br/acesso-a-informacao/consulta-detalhada/planilha-catmat-catser"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Abrir a página oficial de download do CATMAT/CATSER"
+                  className="text-zinc-300 hover:text-zinc-500 dark:text-zinc-600 dark:hover:text-zinc-400 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
               </>
             )}
           </div>
