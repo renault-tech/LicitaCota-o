@@ -16,7 +16,11 @@ export interface PesquisaJobData {
 // Redis estiver inacessível — o `await` trava para sempre, o catch abaixo
 // (que existe para acionar o fallback local) nunca é alcançado. Por isso o
 // produtor usa um limite finito de retentativas e timeout de conexão curto,
-// para falhar rápido e cair no fallback.
+// para falhar rápido e cair no fallback. IMPORTANTE: não desabilitar
+// `enableOfflineQueue` aqui — o BullMQ usa comandos internos (ex.: carregar
+// scripts Lua) que dependem de enfileiramento offline; desabilitá-lo pode
+// gerar uma promise rejeitada fora do nosso try/catch e derrubar o processo
+// inteiro (sem handler de unhandledRejection, Node mata o processo).
 function parseRedisConnection(url: string) {
   try {
     const u = new URL(url);
@@ -28,7 +32,6 @@ function parseRedisConnection(url: string) {
       username: u.username || undefined,
       db: Number(u.pathname.slice(1)) || 0,
       maxRetriesPerRequest: 2,
-      enableOfflineQueue: false,
       connectTimeout: 3000,
       enableReadyCheck: false,
       lazyConnect: true,
@@ -40,7 +43,6 @@ function parseRedisConnection(url: string) {
       host: 'localhost',
       port: 6379,
       maxRetriesPerRequest: 2,
-      enableOfflineQueue: false,
       connectTimeout: 3000,
       enableReadyCheck: false,
       lazyConnect: true,
