@@ -172,7 +172,7 @@ export default function FontesPage() {
               <div className="w-full mt-1">
                 <div className="flex items-center justify-between text-[11px] text-zinc-400 mb-1">
                   <span>
-                    Importando {TIPO_CATALOGO_LABEL[p.tipo]} — {p.processados.toLocaleString('pt-BR')}
+                    Baixando {TIPO_CATALOGO_LABEL[p.tipo]} — página {p.pagina} · {p.processados.toLocaleString('pt-BR')}
                     {p.totalEstimado ? ` de ~${p.totalEstimado.toLocaleString('pt-BR')}` : ''}
                     {pct !== null && ` (${pct}%)`}
                   </span>

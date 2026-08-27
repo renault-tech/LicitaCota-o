@@ -149,6 +149,7 @@ export interface StatusCatalogo {
     ultimoResultado: { materiais: number; servicos: number; erro: string | null } | null;
     progresso: {
       tipo: 'MATERIAL' | 'SERVICO';
+      pagina: number;
       processados: number;
       totalEstimado: number | null;
       itensPorSegundo: number;
