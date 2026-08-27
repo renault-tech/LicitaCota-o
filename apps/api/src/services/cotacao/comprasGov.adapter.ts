@@ -2,7 +2,7 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { resolverCandidatosCatalogo, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
+import { resolverCandidatosCatalogo, resolverCandidatosCatalogoComFallback, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
 
 /**
@@ -14,15 +14,20 @@ import type { FonteAdapter } from './adapter.js';
  * `codigoItemCatalogo` como filtro de item).
  *
  * Por isso, antes de consultar preço, resolvemos a descrição do item para
- * uma lista de códigos candidatos via `resolverCandidatosCatalogo` — busca
- * 100% local contra o catálogo oficial sincronizado (ver
- * catalogoSync.service.ts), sem chamada externa nessa etapa. O catálogo tem
- * centenas de milhares de códigos, muitos quase idênticos (variações de
- * cor/material de um mesmo item); o Painel de Preços só tem histórico para
- * códigos já efetivamente comprados, então tentamos os candidatos em ordem
- * de score até um devolver preço real, em vez de parar no melhor match
- * textual isolado. Sem nenhum candidato com confiança suficiente, a fonte
- * não retorna preço para este item (evita citar preço de item errado).
+ * uma lista de códigos candidatos via `resolverCandidatosCatalogoComFallback`
+ * — busca local contra o catálogo oficial sincronizado (ver
+ * catalogoSync.service.ts) e, só se a busca local não achar nada, uma
+ * última tentativa via catmat.com.br (terceiro, desligado por padrão — ver
+ * catmatFallback.service.ts). Em ambos os casos, o código sugerido ainda
+ * precisa passar pela consulta de preço oficial abaixo antes de virar
+ * resultado — o fallback nunca fornece preço, só um código candidato a mais.
+ * O catálogo tem centenas de milhares de códigos, muitos quase idênticos
+ * (variações de cor/material de um mesmo item); o Painel de Preços só tem
+ * histórico para códigos já efetivamente comprados, então tentamos os
+ * candidatos em ordem de score até um devolver preço real, em vez de parar
+ * no melhor match textual isolado. Sem nenhum candidato com confiança
+ * suficiente, a fonte não retorna preço para este item (evita citar preço
+ * de item errado).
  */
 
 const BASE = 'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco';
@@ -91,11 +96,19 @@ function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoB
     const key = `${orgao}/${data}/${r.siglaUf ?? ''}`;
     if (pontosPorFonte.has(key)) continue;
 
+    const notaFallback = resolvido.origem === 'CATMAT_COM_BR'
+      ? ' (código sugerido por fonte auxiliar não-oficial catmat.com.br; preço confirmado no Compras.gov.br oficial)'
+      : '';
     pontosPorFonte.set(key, {
       preco,
-      referencia: `Compras.gov.br — ${orgao}${data ? ` (${data})` : ''}, código de catálogo ${resolvido.codigo}, consultado em ${new Date().toLocaleDateString('pt-BR')}`,
+      referencia: `Compras.gov.br — ${orgao}${data ? ` (${data})` : ''}, código de catálogo ${resolvido.codigo}${notaFallback}, consultado em ${new Date().toLocaleDateString('pt-BR')}`,
       fundamentacaoArtigo: '',
-      dadosBrutos: { codigoItemCatalogo: resolvido.codigo, scoreResolucaoCodigo: resolvido.score, descricaoCandidata: descricaoDe(r) },
+      dadosBrutos: {
+        codigoItemCatalogo: resolvido.codigo,
+        scoreResolucaoCodigo: resolvido.score,
+        origemCodigoResolucao: resolvido.origem,
+        descricaoCandidata: descricaoDe(r),
+      },
     });
   }
   return [...pontosPorFonte.values()];
@@ -108,7 +121,7 @@ function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoB
  * ligeiramente pior tem. Para no primeiro que retorna algo.
  */
 async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null }> {
-  const candidatos = await resolverCandidatosCatalogo(item.descricaoNormalizada, 'MATERIAL');
+  const candidatos = await resolverCandidatosCatalogoComFallback(item.descricaoNormalizada, 'MATERIAL');
   if (candidatos.length === 0) return { pontos: [], codigoResolvido: null };
 
   for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_TENTADOS)) {

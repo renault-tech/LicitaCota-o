@@ -42,6 +42,10 @@ export const env = {
   STORAGE_KEY: opcional('STORAGE_KEY', ''),
   FRONTEND_URL: opcional('FRONTEND_URL', 'http://localhost:3000'),
   CREDENCIAL_ENC_KEY: opcional('CREDENCIAL_ENC_KEY', 'chave-padrao-dev-troque-em-prod-32b!!'),
+  // Desligado por padrão: catmat.com.br é um site de terceiro, sem SLA, não
+  // validado contra tráfego real ainda. Só ligar depois de confirmar que a
+  // API responde de verdade a partir do ambiente de produção.
+  CATMAT_FALLBACK_HABILITADO: opcional('CATMAT_FALLBACK_HABILITADO', 'false'),
 } as const;
 
 export const isProd = env.NODE_ENV === 'production';
