@@ -1,0 +1,19 @@
+name: Keep Render awake
+
+# Aciona a rota /api/keepalive do frontend (Vercel), que por sua vez pinga
+# /health na API do Render — evita o cold start de ~50s por inatividade no
+# plano free do Render. Usa GitHub Actions (não Vercel Cron) porque o plano
+# Hobby do Vercel só permite cron diário; intervalos menores exigem Pro.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping keepalive
+        run: |
+          curl -fsS --max-time 20 \
+            "https://licita-cota-o-api-renaults-projects-79208217.vercel.app/api/keepalive"
