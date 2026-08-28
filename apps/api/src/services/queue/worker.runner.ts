@@ -9,7 +9,7 @@ import { salvarArquivo } from '../storage.service.js';
 import { notificar } from '../notificacao.service.js';
 import { registrarAuditoria } from '../auditoria.service.js';
 import { progressStore } from './progressStore.js';
-import { sincronizarCatalogo, catalogoEstaVazio } from '../catalogo/catalogoSync.service.js';
+import { sincronizarCatalogo, catalogoEstaVazio, garantirIndiceTrigram } from '../catalogo/catalogoSync.service.js';
 // PesquisaJobData definida localmente para evitar importação circular com pesquisa.queue.ts
 interface PesquisaJobData { pesquisaId: string; autorId: string; }
 
@@ -282,6 +282,12 @@ const TRINTA_DIAS_MS = 30 * UM_DIA_MS;
  */
 async function manterCatalogoAtualizado(): Promise<void> {
   try {
+    // Independente de precisar sincronizar ou não — garante o índice GiST
+    // (troca de um GIN antigo, se existir) sem esperar o próximo ciclo de
+    // sincronização completa, que só roda quando a tabela está vazia ou a
+    // cada 30 dias. Sem isso, a resolução de código faz Seq Scan nas ~340
+    // mil linhas a cada item até a próxima sincronização acontecer.
+    await garantirIndiceTrigram();
     if (await catalogoEstaVazio()) {
       logger.info('Catálogo oficial vazio — sincronizando pela primeira vez.');
       await sincronizarCatalogo();

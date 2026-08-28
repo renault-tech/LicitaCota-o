@@ -13,8 +13,19 @@ import { buscarCandidatoExterno } from './catmatFallback.service.js';
  * explicitamente (ver catmatFallback.service.ts).
  */
 
-const LIMIAR_FINAL = 0.6;
-const CANDIDATOS_TRIGRAM = 8;
+// 0.6 rejeitava correspondências corretas na prática — descrições de
+// compra ("removedor de esmaltes") e do catálogo oficial ("remoção de
+// esmalte") divergem em forma de palavra (sem stemming no comparador),
+// então mesmo o par certo raramente ultrapassava ~0.25-0.35 de score.
+// Confirmado com dado real: "acetona removedor de esmaltes 500ml" vs a
+// entrada oficial de ACETONA pontuou 0.224 — abaixo do limiar antigo,
+// mesmo sendo o candidato certo (1º lugar por similaridade de trigrama).
+const LIMIAR_FINAL = 0.35;
+// Mais candidatos = mais chance do comparador ponderado (mais estrito que
+// o trigram bruto do SQL) achar algo acima do limiar; barato agora que a
+// ordenação usa o índice GiST (ver garantirIndiceTrigram) em vez de Seq
+// Scan.
+const CANDIDATOS_TRIGRAM = 20;
 
 export interface CodigoCatalogoResolvido {
   codigo: number;
@@ -41,10 +52,14 @@ export async function resolverCandidatosCatalogo(
   const busca = normalizarChave(descricaoItem);
   if (!busca) return [];
 
+  // `<->` (distância de trigrama) em vez de `ORDER BY similarity(...) DESC`
+  // — só o operador `<->` contra um índice GiST (gist_trgm_ops) permite
+  // que o Postgres use o índice para essa ordenação (KNN); a função
+  // similarity() direta força Seq Scan na tabela inteira a cada chamada.
   const candidatos = await prisma.$queryRawUnsafe<Array<{ codigo: number; descricao: string }>>(
     `SELECT codigo, descricao FROM "CatalogoOficialItem"
      WHERE tipo = $1::"TipoCatalogoOficial" AND ativo = true
-     ORDER BY similarity(descricao, $2) DESC
+     ORDER BY descricao <-> $2
      LIMIT $3`,
     tipo,
     busca,

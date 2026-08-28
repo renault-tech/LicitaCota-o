@@ -18,10 +18,28 @@ const STOP_TOKENS = new Set([
   'a', 'o', 'as', 'os', 'em', 'no', 'na', 'tipo', 'cor', 'un', 'unidade',
 ]);
 
+/**
+ * Singularização leve (sem dicionário/stemmer completo) — cobre os padrões
+ * de plural mais comuns em descrições de item, o suficiente para que
+ * "esmaltes"/"esmalte", "materiais"/"material", "papeis"/"papel" contem
+ * como o mesmo token. Sem isso, qualquer diferença singular/plural entre a
+ * descrição de compra e a descrição oficial do catálogo derruba o score,
+ * mesmo quando é claramente o mesmo item (confirmado com dado real).
+ */
+function singularizar(t: string): string {
+  if (t.length <= 4) return t;
+  if (t.endsWith('oes') || t.endsWith('aes')) return t.slice(0, -3) + 'ao';
+  if (t.endsWith('ais')) return t.slice(0, -3) + 'al';
+  if (t.endsWith('eis')) return t.slice(0, -3) + 'el';
+  if (t.endsWith('s') && !t.endsWith('ss')) return t.slice(0, -1);
+  return t;
+}
+
 function tokenizar(texto: string): string[] {
   return normalizarChave(texto)
     .split(' ')
-    .filter((t) => t.length > 1 && !STOP_TOKENS.has(t));
+    .filter((t) => t.length > 1 && !STOP_TOKENS.has(t))
+    .map(singularizar);
 }
 
 /**
@@ -51,16 +69,21 @@ export interface CandidatoPontuado<T> {
 }
 
 /**
- * Encontra o melhor candidato acima do limiar mínimo. `limiar` default 0.65:
- * abaixo disso o risco de falso positivo (item errado） supera o ganho de
- * cobertura — é preferível marcar "sem resultado" e cair no fallback de
- * cotação direta do que citar preço de um item diferente numa peça oficial.
+ * Encontra o melhor candidato acima do limiar mínimo. `limiar` default 0.45
+ * (era 0.65 — reduzido depois de confirmar com dado real que mesmo um par
+ * correto de descrições, com uma única palavra central em comum e o resto
+ * divergindo por forma de palavra sem stemming — ex.: "removedor" vs.
+ * "remoção" —, pontua por volta de 0.22-0.28; 0.65 rejeitava
+ * sistematicamente correspondências válidas). Mantido mais conservador que
+ * o limiar de resolução de catálogo (0.35, ver catalogoMatch.service.ts):
+ * aqui o candidato vira preço final sem uma segunda checagem contra API
+ * oficial, então o risco de falso positivo (item errado) pesa mais.
  */
 export function melhorCorrespondencia<T>(
   busca: string,
   candidatos: T[],
   extrairDescricao: (c: T) => string,
-  limiar = 0.65,
+  limiar = 0.45,
 ): CandidatoPontuado<T> | null {
   let melhor: CandidatoPontuado<T> | null = null;
   for (const c of candidatos) {

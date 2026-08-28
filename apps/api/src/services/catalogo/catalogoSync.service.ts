@@ -263,11 +263,20 @@ async function sincronizarUm(tipo: 'MATERIAL' | 'SERVICO', urlBase: string): Pro
   }
 }
 
-async function garantirIndiceTrigram(): Promise<void> {
+export async function garantirIndiceTrigram(): Promise<void> {
   await prisma.$executeRawUnsafe('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+  // GiST (não GIN) — só o opclass gist_trgm_ops permite ORDER BY ... <->
+  // (KNN) usar o índice. Com GIN, `ORDER BY similarity(descricao, $2)`
+  // força um Seq Scan nas ~340 mil linhas a cada resolução de código
+  // (~2,7s medido/extrapolado localmente) em vez de um Index Scan (~3ms) —
+  // ver catalogoMatch.service.ts, que já foi migrado para usar `<->`.
+  // Nome de índice novo (não o antigo _trgm_idx em GIN) para que o
+  // CREATE INDEX IF NOT EXISTS não seja pulado por já existir com outro
+  // método; o índice GIN antigo é removido explicitamente.
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS catalogo_oficial_item_descricao_trgm_idx');
   await prisma.$executeRawUnsafe(
-    'CREATE INDEX IF NOT EXISTS catalogo_oficial_item_descricao_trgm_idx ' +
-    'ON "CatalogoOficialItem" USING gin (descricao gin_trgm_ops)',
+    'CREATE INDEX IF NOT EXISTS catalogo_oficial_item_descricao_trgm_gist_idx ' +
+    'ON "CatalogoOficialItem" USING gist (descricao gist_trgm_ops)',
   );
 }
 
