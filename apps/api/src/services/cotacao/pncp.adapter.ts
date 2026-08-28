@@ -21,10 +21,17 @@ const BASE_PNCP = 'https://pncp.gov.br/api/pncp';
  *     regionais são o comparativo de mercado mais defensável.
  *  2. Contratações nacionais dos últimos 90 dias.
  *  3. Contratações nacionais de 91 a 365 dias atrás.
- * Nenhum filtro de modalidade é aplicado: restringir a um código específico
- * (ex.: só Pregão) descartaria contratações comparáveis via outras
- * modalidades e não há garantia de quais códigos estão em uso no momento —
- * a precisão fica a cargo do casamento de descrição, não do filtro.
+ *
+ * `codigoModalidadeContratacao` é parâmetro OBRIGATÓRIO do endpoint
+ * `/v1/contratacoes/publicacao` (confirmado no Manual de Integração do
+ * PNCP — sem ele, a consulta não falha rápido, fica lenta/trava, o que
+ * bateu com timeouts consistentes observados em produção). Como restringir
+ * a uma única modalidade descartaria contratações comparáveis, cada janela
+ * é consultada para as modalidades mais comuns em compras públicas
+ * (Pregão Eletrônico e Dispensa de Licitação, que juntas cobrem a grande
+ * maioria das contratações publicadas) em vez de tentar cobrir as ~14
+ * modalidades existentes — sondar todas multiplicaria o número de
+ * requisições sem ganho proporcional de cobertura.
  *
  * Cada contrato com item correspondente vira um PontoPreco independente
  * (não uma média): três contratos de três órgãos distintos devem entrar no
@@ -56,6 +63,10 @@ function diasAtras(n: number): Date {
   return d;
 }
 
+/** 6 = Pregão Eletrônico, 8 = Dispensa de Licitação — as duas modalidades
+ * mais usadas em compras públicas; ver comentário no topo do arquivo. */
+const MODALIDADES_COMUNS = [6, 8];
+
 /** Executa `tarefa` sobre `itens` com no máximo `concorrencia` em paralelo. */
 async function mapComConcorrencia<T, R>(
   itens: T[],
@@ -84,10 +95,11 @@ async function buscarContratacoes(
   dataIni: Date,
   dataFim: Date,
   uf: string | undefined,
+  codigoModalidadeContratacao: number,
   maxContratos: number,
 ): Promise<Contratacao[]> {
   const ufParam = uf ? `&uf=${encodeURIComponent(uf)}` : '';
-  const base = `${BASE_CONSULTA}/v1/contratacoes/publicacao?dataInicial=${fmt(dataIni)}&dataFinal=${fmt(dataFim)}${ufParam}&tamanhoPagina=50`;
+  const base = `${BASE_CONSULTA}/v1/contratacoes/publicacao?dataInicial=${fmt(dataIni)}&dataFinal=${fmt(dataFim)}&codigoModalidadeContratacao=${codigoModalidadeContratacao}${ufParam}&tamanhoPagina=50`;
 
   const primeira = await requisitar(`${base}&pagina=1`, { timeoutMs: 12000, retries: 1 });
   if (!primeira.ok) throw new Error(`PNCP respondeu HTTP ${primeira.status} ao listar contratações.`);
@@ -151,15 +163,20 @@ async function buscarPrecos(
   for (const janela of janelas) {
     if (pontosPorFonte.size >= limite) break;
 
-    let contratos: Contratacao[];
-    try {
-      contratos = await buscarContratacoes(janela.ini, janela.fim, janela.uf, 40);
-      algumaJanelaFuncionou = true;
-    } catch (e) {
-      ultimoErro = e;
-      logger.warn(`PNCP: falha ao listar contratações (${janela.rotulo})`, e);
-      continue;
+    const contratos: Contratacao[] = [];
+    let algumaModalidadeFuncionou = false;
+    for (const modalidade of MODALIDADES_COMUNS) {
+      if (pontosPorFonte.size >= limite) break;
+      try {
+        contratos.push(...(await buscarContratacoes(janela.ini, janela.fim, janela.uf, modalidade, 40)));
+        algumaJanelaFuncionou = true;
+        algumaModalidadeFuncionou = true;
+      } catch (e) {
+        ultimoErro = e;
+        logger.warn(`PNCP: falha ao listar contratações (${janela.rotulo}, modalidade ${modalidade})`, e);
+      }
     }
+    if (!algumaModalidadeFuncionou) continue;
     logger.info(`PNCP: ${contratos.length} contratações candidatas (${janela.rotulo})`);
     contratacoesTentadas += contratos.length;
 
@@ -222,16 +239,15 @@ export const pncpAdapter: FonteAdapter = {
     try {
       const hoje = new Date();
       const ini = diasAtras(30);
-      const url = `${BASE_CONSULTA}/v1/contratacoes/publicacao?dataInicial=${fmt(ini)}&dataFinal=${fmt(hoje)}&pagina=1&tamanhoPagina=10`;
-      // Timeout bem mais generoso que o usado durante o processamento real
-      // (12s) — ação isolada do admin, não está no caminho de uma pesquisa
-      // com vários itens. Serve de diagnóstico: se falhar mesmo com 30s, é
-      // sinal de que o PNCP está de fato fora do ar, não só lento; se
-      // funcionar, o endpoint só é mais lento que 12s (provavelmente por
-      // não filtrarmos codigoModalidadeContratacao, que a documentação do
-      // PNCP lista como parâmetro esperado — sem ele, a consulta parece
-      // varrer todas as modalidades no período, mais cara que o normal).
-      const resp = await requisitar(url, { timeoutMs: 30000, retries: 0 });
+      // codigoModalidadeContratacao é obrigatório no endpoint (confirmado no
+      // Manual de Integração do PNCP) — omiti-lo era a causa mais provável
+      // dos timeouts consistentes vistos em produção. 6 = Pregão Eletrônico.
+      const url = `${BASE_CONSULTA}/v1/contratacoes/publicacao?dataInicial=${fmt(ini)}&dataFinal=${fmt(hoje)}&codigoModalidadeContratacao=6&pagina=1&tamanhoPagina=10`;
+      // Timeout ainda mais generoso que o do processamento real (12s) —
+      // ação isolada do admin, não está no caminho de uma pesquisa com
+      // vários itens; serve também de diagnóstico contra qualquer lentidão
+      // residual mesmo com o filtro correto.
+      const resp = await requisitar(url, { timeoutMs: 20000, retries: 0 });
       const latenciaMs = Date.now() - inicio;
       if (!resp.ok) {
         return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `PNCP respondeu HTTP ${resp.status}.`, dadosBrutos: null };
