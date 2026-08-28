@@ -190,6 +190,18 @@ export function useImportarCatalogo() {
   });
 }
 
+export function useImportarCatalogoAutomatico() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tipo: 'MATERIAL' | 'SERVICO') =>
+      apiFetch<{ ok: boolean; tipo: string; processados: number }>('/api/catalogo/importar-automatico', {
+        method: 'POST',
+        body: JSON.stringify({ tipo }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['catalogo-status'] }),
+  });
+}
+
 // ─── Usuários ────────────────────────────────────────────────────────────────
 
 export function useUsuarios(pagina = 1) {

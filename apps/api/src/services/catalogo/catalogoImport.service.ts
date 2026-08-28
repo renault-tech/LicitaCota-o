@@ -4,31 +4,38 @@ import { normalizarChave } from '../../utils/texto.js';
 import { logger } from '../../utils/logger.js';
 
 /**
- * Importa o catálogo oficial a partir das planilhas CATMAT.xlsx/CATSER.xlsx
- * publicadas pelo Portal de Compras do Governo Federal — um único arquivo
- * (~11,6MB o CATMAT, ~166KB o CATSER) em vez de centenas de chamadas
- * paginadas na API. Mesmo destino (tabela CatalogoOficialItem), mesmo efeito
- * na resolução de código e na cotação — só muda como o dado chega até lá.
+ * Importa o catálogo oficial a partir de um arquivo único (CSV ou XLSX) em
+ * vez de centenas de chamadas paginadas na API. Mesmo destino (tabela
+ * CatalogoOficialItem), mesmo efeito na resolução de código e na cotação —
+ * só muda como o dado chega até lá.
  *
- * IMPORTANTE — validar antes de confiar no resultado: os nomes de coluna
- * exatos não puderam ser confirmados contra o arquivo real neste ambiente
- * de desenvolvimento (sem acesso à internet). A detecção de coluna é
- * tolerante (por sinônimo, igual à leitura de planilha de pesquisa) e
- * registra quantas linhas foram reconhecidas — se vier zero com o arquivo
- * carregando normalmente, ajuste só `SINONIMOS_COLUNA` abaixo.
+ * O download automático usa os arquivos CSV publicados em
+ * repositorio.dados.gov.br (confirmado com amostra real colada pelo
+ * usuário — cabeçalho `codigoGrupo\tnomeGrupo\tcodigoClasse\tnomeClasse\t
+ * codigoPdm\tnomePdm\tcodigoItem\tdescricaoItem\tcodigoNcm\t
+ * aplicaMargemPreferencia\tdataHoraAtualizacao`, separado por TAB apesar da
+ * extensão .csv — as descrições têm vírgulas, então vírgula não serviria
+ * como delimitador). Essa é uma URL diferente da página
+ * `www.gov.br/compras/.../planilha-catmat-catser`, que exige login
+ * ("Conteúdo Restrito") e por isso nunca foi usada com sucesso aqui.
+ *
+ * O upload manual de .xlsx (usado como alternativa) tem exatamente os
+ * mesmos nomes de coluna (confirmado com uma amostra real do .xlsx colada
+ * pelo usuário) — por isso os dois caminhos reaproveitam a mesma lista de
+ * sinônimos abaixo.
  */
 
-const URL_XLSX_MATERIAIS = 'https://www.gov.br/compras/pt-br/acesso-a-informacao/consulta-detalhada/planilha-catmat-catser/catmat.xlsx';
-const URL_XLSX_SERVICOS = 'https://www.gov.br/compras/pt-br/acesso-a-informacao/consulta-detalhada/planilha-catmat-catser/catser.xlsx';
+const URL_CSV_MATERIAIS = 'https://repositorio.dados.gov.br/seges/comprasgov/catalogo_cnbs/catmat.csv';
+const URL_CSV_SERVICOS = 'https://repositorio.dados.gov.br/seges/comprasgov/catalogo_cnbs/catser.csv';
 
 type Campo = 'codigo' | 'descricao' | 'grupo' | 'classe' | 'pdm' | 'status';
 
 const SINONIMOS_COLUNA: Record<Campo, string[]> = {
-  codigo: ['codigo', 'codigo catmat', 'codigo catser', 'codigo do item', 'id'],
-  descricao: ['descricao', 'descricao oficial', 'descricao do item', 'nome', 'material', 'servico'],
-  grupo: ['grupo', 'codigo do grupo', 'codigo grupo'],
-  classe: ['classe', 'codigo da classe', 'codigo classe'],
-  pdm: ['pdm', 'codigo pdm'],
+  codigo: ['codigo', 'codigo catmat', 'codigo catser', 'codigo do item', 'id', 'codigoItem'],
+  descricao: ['descricao', 'descricao oficial', 'descricao do item', 'nome', 'material', 'servico', 'descricaoItem'],
+  grupo: ['grupo', 'codigo do grupo', 'codigo grupo', 'codigoGrupo'],
+  classe: ['classe', 'codigo da classe', 'codigo classe', 'codigoClasse'],
+  pdm: ['pdm', 'codigo pdm', 'codigoPdm'],
   status: ['status', 'situacao'],
 };
 
@@ -157,10 +164,78 @@ export async function importarWorkbook(
   return processados;
 }
 
-// requisitar() (utils/http.ts) sempre lê a resposta como texto — corromperia
-// um .xlsx (binário/zip). Fetch cru com timeout próprio, para não duplicar o
-// download só para checar status antes de baixar o binário de verdade.
-async function baixarBuffer(url: string, timeoutMs = 60000): Promise<Buffer> {
+/**
+ * Lê o texto de um CSV/TSV já baixado e grava no catálogo — mesma detecção
+ * de coluna por sinônimo usada em `importarWorkbook`, mas lendo linhas de
+ * texto em vez de um `ExcelJS.Worksheet`. Separador confirmado como TAB
+ * (ver comentário no topo do arquivo).
+ */
+export async function importarCsvTexto(
+  tipo: 'MATERIAL' | 'SERVICO',
+  texto: string,
+  aoProgredir?: (p: ProgressoImportacao) => void,
+): Promise<number> {
+  // Remove BOM (comum em exports de governo) e divide em linhas, tolerando
+  // \r\n e \n; descarta linhas totalmente vazias (ex.: linha final do arquivo).
+  const linhas = texto
+    .replace(/^﻿/, '')
+    .split(/\r\n|\n/)
+    .filter((l) => l.length > 0);
+  if (linhas.length === 0) throw new Error('Arquivo CSV vazio.');
+
+  const cabecalho = linhas[0].split('\t').map((c) => c.trim());
+  const colunas: Record<Campo, number> = { codigo: -1, descricao: -1, grupo: -1, classe: -1, pdm: -1, status: -1 };
+  cabecalho.forEach((titulo, idx) => {
+    const campo = classificarColuna(titulo);
+    if (campo) colunas[campo] = idx;
+  });
+  if (colunas.codigo < 0 || colunas.descricao < 0) {
+    throw new Error('Não encontrei as colunas de código/descrição no CSV — confira o formato.');
+  }
+
+  const totalEstimado = Math.max(0, linhas.length - 1);
+  let lote: LinhaImportada[] = [];
+  let processados = 0;
+
+  for (let i = 1; i < linhas.length; i++) {
+    const campos = linhas[i].split('\t');
+    const codigo = Number.parseInt((campos[colunas.codigo] ?? '').trim(), 10);
+    const descricao = (campos[colunas.descricao] ?? '').trim();
+    if (!Number.isFinite(codigo) || !descricao) continue;
+
+    const statusTexto = colunas.status >= 0 ? (campos[colunas.status] ?? '').trim().toLowerCase() : '';
+    lote.push({
+      codigo,
+      descricao,
+      grupo: colunas.grupo >= 0 ? ((campos[colunas.grupo] ?? '').trim() || null) : null,
+      classe: colunas.classe >= 0 ? ((campos[colunas.classe] ?? '').trim() || null) : null,
+      pdm: colunas.pdm >= 0 ? ((campos[colunas.pdm] ?? '').trim() || null) : null,
+      ativo: statusTexto === '' || !statusTexto.includes('inativ'),
+    });
+
+    if (lote.length >= TAMANHO_LOTE) {
+      await gravarLote(tipo, lote);
+      processados += lote.length;
+      aoProgredir?.({ linhaAtual: i + 1, processados, totalEstimado });
+      lote = [];
+    }
+  }
+  if (lote.length > 0) {
+    await gravarLote(tipo, lote);
+    processados += lote.length;
+    aoProgredir?.({ linhaAtual: linhas.length, processados, totalEstimado });
+  }
+
+  if (processados === 0) {
+    logger.warn(`Catálogo oficial (${tipo}): CSV carregado mas nenhuma linha reconhecida — confira as colunas.`);
+  }
+  return processados;
+}
+
+// requisitar() (utils/http.ts) sempre lê a resposta como texto, então serve
+// para o CSV — mas usamos fetch cru mesmo assim para ter timeout próprio e
+// não duplicar leitura do corpo.
+async function baixarTexto(url: string, timeoutMs = 60000): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -168,11 +243,10 @@ async function baixarBuffer(url: string, timeoutMs = 60000): Promise<Buffer> {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LicitaPrecoBot/1.0; +https://licitapreco.gov.br)' },
       signal: controller.signal,
     });
-    if (!resp.ok) throw new Error(`Download da planilha respondeu HTTP ${resp.status}.`);
-    const arrayBuffer = await resp.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    if (!resp.ok) throw new Error(`Download do CSV respondeu HTTP ${resp.status}.`);
+    return await resp.text();
   } catch (e) {
-    if (e instanceof Error && e.name === 'AbortError') throw new Error(`Tempo de resposta excedido (timeout de ${timeoutMs}ms) ao baixar a planilha.`);
+    if (e instanceof Error && e.name === 'AbortError') throw new Error(`Tempo de resposta excedido (timeout de ${timeoutMs}ms) ao baixar o CSV.`);
     throw e;
   } finally {
     clearTimeout(timer);
@@ -183,7 +257,7 @@ export async function importarCatalogoAutomatico(
   tipo: 'MATERIAL' | 'SERVICO',
   aoProgredir?: (p: ProgressoImportacao) => void,
 ): Promise<number> {
-  const url = tipo === 'MATERIAL' ? URL_XLSX_MATERIAIS : URL_XLSX_SERVICOS;
-  const buffer = await baixarBuffer(url);
-  return importarWorkbook(tipo, buffer, aoProgredir);
+  const url = tipo === 'MATERIAL' ? URL_CSV_MATERIAIS : URL_CSV_SERVICOS;
+  const texto = await baixarTexto(url);
+  return importarCsvTexto(tipo, texto, aoProgredir);
 }

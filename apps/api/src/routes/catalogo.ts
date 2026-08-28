@@ -8,7 +8,7 @@ import {
   obterEstatisticasCatalogo,
   dispararSincronizacaoEmBackground,
 } from '../services/catalogo/catalogoSync.service.js';
-import { importarWorkbook } from '../services/catalogo/catalogoImport.service.js';
+import { importarWorkbook, importarCatalogoAutomatico } from '../services/catalogo/catalogoImport.service.js';
 
 const router: Router = Router();
 
@@ -52,6 +52,18 @@ router.post('/importar', autenticar, exigirRole('ADMIN'), upload.single('arquivo
     const { tipo } = z.object({ tipo: z.enum(['MATERIAL', 'SERVICO']) }).parse(req.body);
 
     const processados = await importarWorkbook(tipo, req.file.buffer);
+    res.json({ ok: true, tipo, processados });
+  } catch (e) { next(e); }
+});
+
+// POST /api/catalogo/importar-automatico — baixa e importa o CSV oficial
+// direto de repositorio.dados.gov.br, somente ADMIN. Diferente da página
+// www.gov.br/compras/.../planilha-catmat-catser (exige login), este
+// endpoint é público — não cai em tela de "Conteúdo Restrito".
+router.post('/importar-automatico', autenticar, exigirRole('ADMIN'), async (req, res, next) => {
+  try {
+    const { tipo } = z.object({ tipo: z.enum(['MATERIAL', 'SERVICO']) }).parse(req.body);
+    const processados = await importarCatalogoAutomatico(tipo);
     res.json({ ok: true, tipo, processados });
   } catch (e) { next(e); }
 });

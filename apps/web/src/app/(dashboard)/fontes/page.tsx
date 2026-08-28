@@ -1,9 +1,9 @@
 'use client';
 import { useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen, Upload, ExternalLink } from 'lucide-react';
+import { Zap, ToggleLeft, ToggleRight, Database, Loader2, Globe, Table, RefreshCw, BookOpen, Upload, ExternalLink, Download } from 'lucide-react';
 import { toast } from 'sonner';
-import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo, useImportarCatalogo } from '@/lib/queries';
+import { useFontes, useTestarFonte, useAtivarFonte, useStatusCatalogo, useSincronizarCatalogo, useImportarCatalogo, useImportarCatalogoAutomatico } from '@/lib/queries';
 import { FonteBadge } from '@/components/common/StatusBadge';
 import EmptyState from '@/components/common/EmptyState';
 import ErrorState from '@/components/common/ErrorState';
@@ -30,6 +30,7 @@ export default function FontesPage() {
   const { data: catalogo } = useStatusCatalogo();
   const sincronizarCatalogo = useSincronizarCatalogo();
   const importarCatalogo = useImportarCatalogo();
+  const importarAutomatico = useImportarCatalogoAutomatico();
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string; latencia: number }>>({});
   const [testando, setTestando] = useState<string | null>(null);
   const [tipoImportar, setTipoImportar] = useState<'MATERIAL' | 'SERVICO'>('MATERIAL');
@@ -43,6 +44,15 @@ export default function FontesPage() {
       );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Erro ao iniciar sincronização');
+    }
+  }
+
+  async function handleImportarAutomatico() {
+    try {
+      const res = await importarAutomatico.mutateAsync(tipoImportar);
+      toast.success(`Catálogo importado — ${res.processados.toLocaleString('pt-BR')} itens.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erro ao importar catálogo automaticamente');
     }
   }
 
@@ -143,6 +153,15 @@ export default function FontesPage() {
                   className="hidden"
                   onChange={handleArquivoSelecionado}
                 />
+                <button
+                  onClick={handleImportarAutomatico}
+                  disabled={importarAutomatico.isPending}
+                  className="btn-ghost text-xs px-3 py-1.5"
+                  title="Baixar e importar automaticamente (direto de repositorio.dados.gov.br, sem sair do app)"
+                >
+                  {importarAutomatico.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  Importar direto
+                </button>
                 <button
                   onClick={() => inputArquivoRef.current?.click()}
                   disabled={importarCatalogo.isPending}
