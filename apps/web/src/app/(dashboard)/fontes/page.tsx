@@ -121,6 +121,8 @@ export default function FontesPage() {
               </span>
             ) : catalogo.sincronizacao.ultimoResultado?.erro ? (
               <span className="text-xs text-red-500">Falha na última sincronização</span>
+            ) : catalogo.sincronizacao.ultimoResultado ? (
+              <span className="text-xs text-emerald-500">Última importação concluída com sucesso</span>
             ) : catalogo.materiais === 0 && catalogo.servicos === 0 ? (
               <span className="text-xs text-amber-500">Ainda não sincronizado</span>
             ) : null}
@@ -174,10 +176,10 @@ export default function FontesPage() {
                   Importar planilha
                 </button>
                 <a
-                  href="https://www.gov.br/compras/pt-br/acesso-a-informacao/consulta-detalhada/planilha-catmat-catser"
+                  href="https://repositorio.dados.gov.br/seges/comprasgov/catalogo_cnbs/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  title="Abrir a página oficial de download do CATMAT/CATSER"
+                  title="Abrir a página com os arquivos CATMAT/CATSER para baixar manualmente"
                   className="text-zinc-300 hover:text-zinc-500 dark:text-zinc-600 dark:hover:text-zinc-400 transition-colors"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
@@ -216,6 +218,14 @@ export default function FontesPage() {
           {!catalogo.sincronizacao.emAndamento && catalogo.sincronizacao.ultimoResultado?.erro && (
             <p className="w-full text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 mt-1">
               {catalogo.sincronizacao.ultimoResultado.erro}
+            </p>
+          )}
+
+          {!catalogo.sincronizacao.emAndamento && catalogo.sincronizacao.ultimoResultado && !catalogo.sincronizacao.ultimoResultado.erro && (
+            <p className="w-full text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg px-3 py-2 mt-1">
+              Importação concluída{catalogo.sincronizacao.concluidoEm ? ` em ${formatDate(catalogo.sincronizacao.concluidoEm)}` : ''} —{' '}
+              {catalogo.sincronizacao.ultimoResultado.materiais.toLocaleString('pt-BR')} materiais e{' '}
+              {catalogo.sincronizacao.ultimoResultado.servicos.toLocaleString('pt-BR')} serviços no catálogo agora.
             </p>
           )}
         </div>

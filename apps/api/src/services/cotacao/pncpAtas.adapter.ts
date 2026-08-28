@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
@@ -14,6 +15,13 @@ const BASE_PNCP = 'https://pncp.gov.br/api/pncp';
  * pncp.adapter.ts. Atas são especialmente valiosas: `valorUnitario` é o
  * preço homologado (vencedor do certame), não uma estimativa, e a vigência
  * longa (até 1 ano, prorrogável) mantém o preço válido por mais tempo.
+ *
+ * Diferente do endpoint de contratações, `/v1/atas` NÃO exige
+ * codigoModalidadeContratacao (parâmetros obrigatórios documentados são só
+ * dataInicial/dataFinal/pagina, que já eram enviados) — mas devolve até 500
+ * registros por página (contra 50 do endpoint de contratações), então
+ * timeouts consistentes aqui são mais prováveis de ser só "precisa de mais
+ * tempo" do que um parâmetro faltando.
  */
 
 interface Ata {
@@ -80,14 +88,14 @@ async function buscarAtas(dataIni: Date, dataFim: Date, uf: string | undefined, 
   const ufParam = uf ? `&uf=${encodeURIComponent(uf)}` : '';
   const base = `${BASE_CONSULTA}/v1/atas?dataInicial=${fmt(dataIni)}&dataFinal=${fmt(dataFim)}${ufParam}&tamanhoPagina=50`;
 
-  const primeira = await requisitar(`${base}&pagina=1`, { timeoutMs: 12000, retries: 1 });
+  const primeira = await requisitar(`${base}&pagina=1`, { timeoutMs: 18000, retries: 1 });
   if (!primeira.ok) throw new Error(`PNCP Atas respondeu HTTP ${primeira.status}.`);
   const corpo1 = primeira.corpoJson as { totalPaginas?: number; data?: Ata[] } | null;
   const totalPaginas = corpo1?.totalPaginas ?? 1;
 
   if (totalPaginas <= 1) return (corpo1?.data ?? []).filter((a) => !a.cancelado && a.numeroControlePNCPAta);
 
-  const ultima = await requisitar(`${base}&pagina=${totalPaginas}`, { timeoutMs: 12000, retries: 1 });
+  const ultima = await requisitar(`${base}&pagina=${totalPaginas}`, { timeoutMs: 18000, retries: 1 });
   if (!ultima.ok) throw new Error(`PNCP Atas respondeu HTTP ${ultima.status}.`);
   const corpo2 = ultima.corpoJson as { data?: Ata[] } | null;
   const atas = (corpo2?.data ?? []).filter((a) => !a.cancelado && a.numeroControlePNCPAta);
@@ -195,25 +203,36 @@ export const pncpAtasAdapter: FonteAdapter = {
 
   async testar(_config: FonteCotacao, _itemAmostra: string): Promise<TesteResultado> {
     const inicio = Date.now();
+    let dnsInfo = '';
+    try {
+      const dnsInicio = Date.now();
+      const enderecos = await lookup('pncp.gov.br');
+      dnsInfo = `DNS resolveu para ${enderecos.address} em ${Date.now() - dnsInicio}ms. `;
+    } catch (e) {
+      dnsInfo = `DNS FALHOU: ${e instanceof Error ? e.message : String(e)}. `;
+    }
     try {
       const hoje = new Date();
       const ini = diasAtras(30);
       const url = `${BASE_CONSULTA}/v1/atas?dataInicial=${fmt(ini)}&dataFinal=${fmt(hoje)}&pagina=1&tamanhoPagina=10`;
-      const resp = await requisitar(url, { timeoutMs: 15000, retries: 1 });
+      // Timeout generoso — ação isolada do admin, e o endpoint devolve até
+      // 500 registros/página (vs. 50 do endpoint de contratações), então
+      // legitimamente pode ser mais lento mesmo sem nenhum problema real.
+      const resp = await requisitar(url, { timeoutMs: 25000, retries: 0 });
       const latenciaMs = Date.now() - inicio;
       if (!resp.ok) {
-        return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `PNCP Atas respondeu HTTP ${resp.status}.`, dadosBrutos: null };
+        return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `${dnsInfo}PNCP Atas respondeu HTTP ${resp.status}.`, dadosBrutos: null };
       }
       const body = resp.corpoJson as { totalRegistros?: number; totalPaginas?: number } | null;
       return {
         ok: true, latenciaMs, amostraPreco: null, amostraReferencia: null,
-        mensagem: `PNCP Atas acessível — ${body?.totalRegistros?.toLocaleString('pt-BR')} atas disponíveis em ${latenciaMs}ms.`,
+        mensagem: `${dnsInfo}PNCP Atas acessível — ${body?.totalRegistros?.toLocaleString('pt-BR')} atas disponíveis em ${latenciaMs}ms.`,
         dadosBrutos: { totalRegistros: body?.totalRegistros, totalPaginas: body?.totalPaginas },
       };
     } catch (e) {
       return {
         ok: false, latenciaMs: Date.now() - inicio, amostraPreco: null, amostraReferencia: null,
-        mensagem: e instanceof Error ? `Falha: ${e.message}` : 'Falha de conexão.', dadosBrutos: null,
+        mensagem: `${dnsInfo}Falha: ${e instanceof Error ? e.message : 'Falha de conexão.'}`, dadosBrutos: null,
       };
     }
   },
