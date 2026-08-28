@@ -3,7 +3,7 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { melhorCorrespondencia } from '../../utils/matching.js';
+import { melhorCorrespondencia, pontuarCorrespondencia } from '../../utils/matching.js';
 import type { FonteAdapter } from './adapter.js';
 
 const BASE_CONSULTA = 'https://pncp.gov.br/api/consulta';
@@ -128,10 +128,12 @@ function montarJanelas(uf: string | undefined): Janela[] {
 async function buscarPrecos(
   item: ItemNormalizado,
   limite: number,
-): Promise<{ pontos: PontoPreco[]; atasTentadas: number }> {
+): Promise<{ pontos: PontoPreco[]; atasTentadas: number; itensAvaliados: number; melhorScoreVisto: number }> {
   const janelas = montarJanelas(item.uf);
   const pontosPorFonte = new Map<string, PontoPreco>();
   let atasTentadas = 0;
+  let itensAvaliados = 0;
+  let melhorScoreVisto = 0;
   let algumaJanelaFuncionou = false;
   let ultimoErro: unknown;
 
@@ -165,9 +167,17 @@ async function buscarPrecos(
       const candidatos = itens
         .map((it) => ({ it, desc: it.descricao ?? it.descricaoItem ?? '', preco: it.valorUnitario ?? it.valorUnitarioEstimado }))
         .filter((c) => c.desc && c.preco && c.preco > 0);
+      itensAvaliados += candidatos.length;
 
       const melhor = melhorCorrespondencia(item.descricaoNormalizada, candidatos, (c) => c.desc);
-      if (!melhor) continue;
+      if (!melhor) {
+        for (const c of candidatos) {
+          const score = pontuarCorrespondencia(item.descricaoNormalizada, c.desc);
+          if (score > melhorScoreVisto) melhorScoreVisto = score;
+        }
+        continue;
+      }
+      if (melhor.score > melhorScoreVisto) melhorScoreVisto = melhor.score;
 
       const key = `${p.cnpj}/${p.anoCompra}/${p.sequencialCompra}/ata${p.sequencialAta}`;
       const data = ata.dataPublicacaoPncp?.slice(0, 10) ?? `${p.anoCompra}`;
@@ -182,7 +192,7 @@ async function buscarPrecos(
 
   if (!algumaJanelaFuncionou && ultimoErro) throw ultimoErro;
 
-  return { pontos: [...pontosPorFonte.values()], atasTentadas };
+  return { pontos: [...pontosPorFonte.values()], atasTentadas, itensAvaliados, melhorScoreVisto };
 }
 
 export const pncpAtasAdapter: FonteAdapter = {
@@ -191,9 +201,15 @@ export const pncpAtasAdapter: FonteAdapter = {
   async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoConsultaFonte> {
     const limite = Math.max(config.limiteResultados > 0 ? config.limiteResultados : 3, 3);
     try {
-      const { pontos, atasTentadas } = await buscarPrecos(item, limite);
+      const { pontos, atasTentadas, itensAvaliados, melhorScoreVisto } = await buscarPrecos(item, limite);
       logger.info(`PNCP Atas: ${pontos.length} preço(s) de fontes distintas (${atasTentadas} atas avaliadas)`);
       const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
+      if (pontos.length === 0) {
+        return {
+          pontos: [],
+          diagnostico: `PNCP Atas: ${atasTentadas} atas e ${itensAvaliados} itens avaliados, melhor score de correspondência ${melhorScoreVisto.toFixed(2)} (limiar 0.45).`,
+        };
+      }
       return { pontos: pontos.map((p) => ({ ...p, fundamentacaoArtigo })) };
     } catch (e) {
       logger.error('PNCP Atas: fonte indisponível', e);

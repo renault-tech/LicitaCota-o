@@ -62,6 +62,11 @@ export async function cotarItem(
   // "nenhuma fonte pôde ser consultada". Só a segunda situação justifica
   // ERRO em vez do fallback de cotação direta automática.
   let fontesRespondidasComSucesso = 0;
+  // Diagnóstico técnico de por que cada fonte não achou preço (candidato de
+  // catálogo tentado, score de correspondência visto, etc.) — anexado à
+  // observação do item quando ele fica SEM_RESULTADO, para investigar sem
+  // precisar de acesso a logs do servidor.
+  const diagnosticosSemResultado: string[] = [];
 
   // Remove cotações anteriores deste item (re-cotação) preservando as
   // editadas manualmente pelo servidor responsável.
@@ -103,13 +108,14 @@ export async function cotarItem(
       } else if (resultado.pontos.length === 0) {
         // A fonte respondeu normalmente e não encontrou preço para o item.
         fontesRespondidasComSucesso++;
+        if (resultado.diagnostico) diagnosticosSemResultado.push(resultado.diagnostico);
         await prisma.cotacao.create({
           data: {
             itemPesquisaId: itemId,
             fonte: fonte.slug,
             preco: null,
             fundamentacaoArtigo: fonte.fundamentacaoArtigo,
-            dadosBrutos: undefined,
+            dadosBrutos: (resultado.diagnostico ? { diagnostico: resultado.diagnostico } : null) as object,
           },
         });
       } else {
@@ -235,7 +241,9 @@ export async function cotarItem(
       observacao = MENSAGENS_STATUS.aguardandoFornecedor;
     } else if (calc.precoReferencia === null) {
       statusItem = 'SEM_RESULTADO';
-      observacao = MENSAGENS_STATUS.pesquisaManualNecessaria;
+      observacao = diagnosticosSemResultado.length > 0
+        ? `${MENSAGENS_STATUS.pesquisaManualNecessaria} [Diagnóstico: ${diagnosticosSemResultado.join(' | ')}]`
+        : MENSAGENS_STATUS.pesquisaManualNecessaria;
     } else {
       statusItem = 'COTADO';
       observacao = MENSAGENS_STATUS.pesquisaIncompleta;

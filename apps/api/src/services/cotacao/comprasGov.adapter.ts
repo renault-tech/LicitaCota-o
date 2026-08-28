@@ -133,19 +133,24 @@ function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoB
  * comprado (sem histórico no Painel de Preços), enquanto um candidato
  * ligeiramente pior tem. Para no primeiro que retorna algo.
  */
-async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null }> {
+async function buscarPrecos(
+  item: ItemNormalizado,
+  limite: number,
+): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null; candidatosTentados: Array<{ codigo: number; score: number; descricaoCatalogo: string }> }> {
   const candidatos = await resolverCandidatosCatalogoComFallback(item.descricaoNormalizada, 'MATERIAL');
-  if (candidatos.length === 0) return { pontos: [], codigoResolvido: null };
+  if (candidatos.length === 0) return { pontos: [], codigoResolvido: null, candidatosTentados: [] };
 
+  const tentados: Array<{ codigo: number; score: number; descricaoCatalogo: string }> = [];
   for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_COTACAO)) {
+    tentados.push({ codigo: candidato.codigo, score: candidato.score, descricaoCatalogo: candidato.descricaoCatalogo });
     const resultados = await buscarPorCodigo(candidato.codigo, item.uf, Math.max(limite * 10, 50), OPCOES_REQUISICAO_COTACAO);
     const pontos = montarPontos(candidato, resultados, limite);
-    if (pontos.length > 0) return { pontos, codigoResolvido: candidato.codigo };
+    if (pontos.length > 0) return { pontos, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
   }
 
   // Nenhum candidato teve preço registrado — reporta o melhor código
   // resolvido mesmo assim, para aparecer no log/diagnóstico.
-  return { pontos: [], codigoResolvido: candidatos[0].codigo };
+  return { pontos: [], codigoResolvido: candidatos[0].codigo, candidatosTentados: tentados };
 }
 
 export const comprasGovAdapter: FonteAdapter = {
@@ -154,13 +159,17 @@ export const comprasGovAdapter: FonteAdapter = {
   async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoConsultaFonte> {
     const limite = Math.max(config.limiteResultados > 0 ? config.limiteResultados : 3, 3);
     try {
-      const { pontos, codigoResolvido } = await buscarPrecos(item, limite);
+      const { pontos, codigoResolvido, candidatosTentados } = await buscarPrecos(item, limite);
       if (codigoResolvido === null) {
         logger.info('Compras.gov.br: nenhum código de catálogo resolvido com confiança para o item — pulando fonte.');
-        return { pontos: [] };
+        return { pontos: [], diagnostico: 'Compras.gov.br: nenhum código de catálogo local passou no limiar de confiança (ver Fontes → catálogo sincronizado).' };
       }
       logger.info(`Compras.gov.br: ${pontos.length} preço(s) de fontes distintas (código ${codigoResolvido})`);
       const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
+      if (pontos.length === 0) {
+        const lista = candidatosTentados.map((c) => `${c.codigo} (score ${c.score.toFixed(2)}: "${c.descricaoCatalogo.slice(0, 60)}")`).join('; ');
+        return { pontos: [], diagnostico: `Compras.gov.br: código(s) resolvido(s) [${lista}] mas nenhum tem preço registrado no Painel de Preços.` };
+      }
       return { pontos: pontos.map((p) => ({ ...p, fundamentacaoArtigo })) };
     } catch (e) {
       logger.error('Compras.gov.br: fonte indisponível', e);

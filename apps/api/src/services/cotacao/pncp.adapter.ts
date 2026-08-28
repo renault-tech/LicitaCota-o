@@ -3,7 +3,7 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { melhorCorrespondencia } from '../../utils/matching.js';
+import { melhorCorrespondencia, pontuarCorrespondencia } from '../../utils/matching.js';
 import type { FonteAdapter } from './adapter.js';
 
 const BASE_CONSULTA = 'https://pncp.gov.br/api/consulta';
@@ -154,10 +154,12 @@ function montarJanelas(uf: string | undefined): Janela[] {
 async function buscarPrecos(
   item: ItemNormalizado,
   limite: number,
-): Promise<{ pontos: PontoPreco[]; contratacoesTentadas: number }> {
+): Promise<{ pontos: PontoPreco[]; contratacoesTentadas: number; itensAvaliados: number; melhorScoreVisto: number }> {
   const janelas = montarJanelas(item.uf);
   const pontosPorFonte = new Map<string, PontoPreco>();
   let contratacoesTentadas = 0;
+  let itensAvaliados = 0;
+  let melhorScoreVisto = 0;
   let algumaJanelaFuncionou = false;
   let ultimoErro: unknown;
 
@@ -196,9 +198,19 @@ async function buscarPrecos(
       const candidatos = itens
         .map((it) => ({ it, desc: it.descricao ?? it.descricaoItem ?? '', preco: it.valorUnitario ?? it.valorUnitarioEstimado }))
         .filter((c) => c.desc && c.preco && c.preco > 0);
+      itensAvaliados += candidatos.length;
 
       const melhor = melhorCorrespondencia(item.descricaoNormalizada, candidatos, (c) => c.desc);
-      if (!melhor) continue;
+      if (!melhor) {
+        // Rastreia o melhor score visto mesmo abaixo do limiar — diferencia
+        // "quase passou" de "nada parecido" no diagnóstico exposto ao item.
+        for (const c of candidatos) {
+          const score = pontuarCorrespondencia(item.descricaoNormalizada, c.desc);
+          if (score > melhorScoreVisto) melhorScoreVisto = score;
+        }
+        continue;
+      }
+      if (melhor.score > melhorScoreVisto) melhorScoreVisto = melhor.score;
 
       const key = `${ct.orgaoEntidade!.cnpj}/${ct.anoCompra}/${ct.sequencialCompra}`;
       const orgao = ct.orgaoEntidade?.razaoSocial ?? ct.orgaoEntidade!.cnpj;
@@ -216,7 +228,7 @@ async function buscarPrecos(
   // (fonte de fato indisponível); falha parcial já é registrada via log.
   if (!algumaJanelaFuncionou && ultimoErro) throw ultimoErro;
 
-  return { pontos: [...pontosPorFonte.values()], contratacoesTentadas };
+  return { pontos: [...pontosPorFonte.values()], contratacoesTentadas, itensAvaliados, melhorScoreVisto };
 }
 
 export const pncpAdapter: FonteAdapter = {
@@ -225,9 +237,15 @@ export const pncpAdapter: FonteAdapter = {
   async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoConsultaFonte> {
     const limite = Math.max(config.limiteResultados > 0 ? config.limiteResultados : 3, 3);
     try {
-      const { pontos, contratacoesTentadas } = await buscarPrecos(item, limite);
+      const { pontos, contratacoesTentadas, itensAvaliados, melhorScoreVisto } = await buscarPrecos(item, limite);
       logger.info(`PNCP: ${pontos.length} preço(s) de fontes distintas (${contratacoesTentadas} contratações avaliadas)`);
       const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
+      if (pontos.length === 0) {
+        return {
+          pontos: [],
+          diagnostico: `PNCP: ${contratacoesTentadas} contratações e ${itensAvaliados} itens avaliados, melhor score de correspondência ${melhorScoreVisto.toFixed(2)} (limiar 0.45).`,
+        };
+      }
       return { pontos: pontos.map((p) => ({ ...p, fundamentacaoArtigo })) };
     } catch (e) {
       logger.error('PNCP: fonte indisponível', e);

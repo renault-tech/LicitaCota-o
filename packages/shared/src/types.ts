@@ -47,6 +47,13 @@ export interface PontoPreco {
 export interface ResultadoConsultaFonte {
   pontos: PontoPreco[];
   erro?: string;
+  /**
+   * Motivo técnico de `pontos: []` sem `erro` (fonte respondeu, mas não
+   * achou preço) — ex.: "nenhum candidato de catálogo acima do limiar" ou
+   * "código X resolvido, mas sem preço registrado". Opcional, só para
+   * diagnóstico (aparece em ItemPesquisa.observacao); não afeta o cálculo.
+   */
+  diagnostico?: string;
 }
 
 /** @deprecated use ResultadoConsultaFonte — mantido apenas para o adapter de tabela de referência em transição. */
