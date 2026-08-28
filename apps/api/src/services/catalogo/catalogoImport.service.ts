@@ -10,19 +10,27 @@ import { logger } from '../../utils/logger.js';
  * só muda como o dado chega até lá.
  *
  * O download automático usa os arquivos CSV publicados em
- * repositorio.dados.gov.br (confirmado com amostra real colada pelo
- * usuário — cabeçalho `codigoGrupo\tnomeGrupo\tcodigoClasse\tnomeClasse\t
- * codigoPdm\tnomePdm\tcodigoItem\tdescricaoItem\tcodigoNcm\t
- * aplicaMargemPreferencia\tdataHoraAtualizacao`, separado por TAB apesar da
- * extensão .csv — as descrições têm vírgulas, então vírgula não serviria
- * como delimitador). Essa é uma URL diferente da página
- * `www.gov.br/compras/.../planilha-catmat-catser`, que exige login
- * ("Conteúdo Restrito") e por isso nunca foi usada com sucesso aqui.
+ * repositorio.dados.gov.br (confirmado com amostras reais coladas pelo
+ * usuário). Os dois arquivos têm formatos DIFERENTES entre si, apesar de
+ * ambos serem TAB-separated apesar da extensão .csv (as descrições têm
+ * vírgulas, então vírgula não serviria como delimitador):
+ * - catmat.csv: `codigoGrupo\tnomeGrupo\tcodigoClasse\tnomeClasse\t
+ *   codigoPdm\tnomePdm\tcodigoItem\tdescricaoItem\tcodigoNcm\t
+ *   aplicaMargemPreferencia\tdataHoraAtualizacao` — sem coluna de status
+ *   (todo item importado fica ativo).
+ * - catser.csv: `codigoGrupo\tnomeGrupo\tcodigoClasse\tnomeClasse\t
+ *   codigoServico\tnomeServico\tstatusServico` — sem PDM, campo de código
+ *   e descrição com nomes diferentes, e `statusServico` como booleano
+ *   texto ("TRUE"/"FALSE", não "ativo"/"inativo" como no XLSX legado —
+ *   ver `interpretarAtivo`).
+ * Ambas as URLs são diferentes da página `www.gov.br/compras/.../
+ * planilha-catmat-catser`, que exige login ("Conteúdo Restrito") e por
+ * isso nunca foi usada com sucesso aqui.
  *
- * O upload manual de .xlsx (usado como alternativa) tem exatamente os
- * mesmos nomes de coluna (confirmado com uma amostra real do .xlsx colada
- * pelo usuário) — por isso os dois caminhos reaproveitam a mesma lista de
- * sinônimos abaixo.
+ * O upload manual de .xlsx (usado como alternativa) tem os mesmos nomes de
+ * coluna do CATMAT (confirmado com uma amostra real do .xlsx colada pelo
+ * usuário) — por isso os dois caminhos reaproveitam a mesma lista de
+ * sinônimos abaixo, que cobre os dois formatos (CATMAT e CATSER).
  */
 
 const URL_CSV_MATERIAIS = 'https://repositorio.dados.gov.br/seges/comprasgov/catalogo_cnbs/catmat.csv';
@@ -31,12 +39,12 @@ const URL_CSV_SERVICOS = 'https://repositorio.dados.gov.br/seges/comprasgov/cata
 type Campo = 'codigo' | 'descricao' | 'grupo' | 'classe' | 'pdm' | 'status';
 
 const SINONIMOS_COLUNA: Record<Campo, string[]> = {
-  codigo: ['codigo', 'codigo catmat', 'codigo catser', 'codigo do item', 'id', 'codigoItem'],
-  descricao: ['descricao', 'descricao oficial', 'descricao do item', 'nome', 'material', 'servico', 'descricaoItem'],
+  codigo: ['codigo', 'codigo catmat', 'codigo catser', 'codigo do item', 'id', 'codigoItem', 'codigoServico'],
+  descricao: ['descricao', 'descricao oficial', 'descricao do item', 'nome', 'material', 'servico', 'descricaoItem', 'nomeServico'],
   grupo: ['grupo', 'codigo do grupo', 'codigo grupo', 'codigoGrupo'],
   classe: ['classe', 'codigo da classe', 'codigo classe', 'codigoClasse'],
   pdm: ['pdm', 'codigo pdm', 'codigoPdm'],
-  status: ['status', 'situacao'],
+  status: ['status', 'situacao', 'statusServico'],
 };
 
 function classificarColuna(titulo: string): Campo | null {
@@ -58,6 +66,20 @@ function celulaTexto(valor: ExcelJS.CellValue): string {
     return '';
   }
   return String(valor).trim();
+}
+
+/**
+ * Interpreta a coluna de status/situação como ativo/inativo — tolerante a
+ * formatos distintos observados nos arquivos reais: texto livre no CATMAT
+ * ("ativo"/"inativo") e booleano no CATSER (`statusServico`: "TRUE"/"FALSE").
+ * "inativo".includes('ativ') também é true — por isso a checagem de
+ * ausência de "inativ" vem antes de qualquer outra coisa.
+ */
+function interpretarAtivo(statusTexto: string): boolean {
+  if (statusTexto === '') return true;
+  if (statusTexto.includes('inativ')) return false;
+  if (statusTexto === 'false' || statusTexto === '0' || statusTexto === 'nao' || statusTexto === 'não') return false;
+  return true;
 }
 
 interface LinhaImportada {
@@ -142,7 +164,7 @@ export async function importarWorkbook(
       classe: colunas.classe > 0 ? (celulaTexto(linha.getCell(colunas.classe).value) || null) : null,
       pdm: colunas.pdm > 0 ? (celulaTexto(linha.getCell(colunas.pdm).value) || null) : null,
       // "inativo".includes('ativ') também é true — precisa checar ausência de "inativ".
-      ativo: statusTexto === '' || !statusTexto.includes('inativ'),
+      ativo: interpretarAtivo(statusTexto),
     });
 
     if (lote.length >= TAMANHO_LOTE) {
@@ -210,7 +232,7 @@ export async function importarCsvTexto(
       grupo: colunas.grupo >= 0 ? ((campos[colunas.grupo] ?? '').trim() || null) : null,
       classe: colunas.classe >= 0 ? ((campos[colunas.classe] ?? '').trim() || null) : null,
       pdm: colunas.pdm >= 0 ? ((campos[colunas.pdm] ?? '').trim() || null) : null,
-      ativo: statusTexto === '' || !statusTexto.includes('inativ'),
+      ativo: interpretarAtivo(statusTexto),
     });
 
     if (lote.length >= TAMANHO_LOTE) {
