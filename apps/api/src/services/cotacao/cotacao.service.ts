@@ -56,6 +56,12 @@ export async function cotarItem(
   // (a flag também controla o que entra em recálculos futuros).
   const origemPorPreco: Array<{ preco: number; referencia: string; cotacaoDiretaId?: string }> = [];
   let houveErroFonte = false;
+  // Distinto de "nenhuma fonte encontrou preço": conta fontes que de fato
+  // responderam (com ou sem preço), para não confundir "uma fonte deu
+  // timeout mas outra respondeu e simplesmente não achou preço" com
+  // "nenhuma fonte pôde ser consultada". Só a segunda situação justifica
+  // ERRO em vez do fallback de cotação direta automática.
+  let fontesRespondidasComSucesso = 0;
 
   // Remove cotações anteriores deste item (re-cotação) preservando as
   // editadas manualmente pelo servidor responsável.
@@ -96,6 +102,7 @@ export async function cotarItem(
         });
       } else if (resultado.pontos.length === 0) {
         // A fonte respondeu normalmente e não encontrou preço para o item.
+        fontesRespondidasComSucesso++;
         await prisma.cotacao.create({
           data: {
             itemPesquisaId: itemId,
@@ -106,6 +113,7 @@ export async function cotarItem(
           },
         });
       } else {
+        fontesRespondidasComSucesso++;
         for (const ponto of resultado.pontos) {
           await prisma.cotacao.create({
             data: {
@@ -202,9 +210,13 @@ export async function cotarItem(
 
   if (calc.completa) {
     statusItem = 'COTADO';
-  } else if (calc.precoReferencia === null && houveErroFonte && calc.fontesComPreco === 0) {
+  } else if (calc.precoReferencia === null && houveErroFonte && fontesRespondidasComSucesso === 0) {
     // Nenhuma fonte automática respondeu por falha técnica — não é seguro
     // reportar "sem preço no mercado" quando na verdade nada foi consultado.
+    // Importante: isso exige que TODAS as fontes tenham falhado tecnicamente
+    // (nenhuma sequer respondeu) — uma fonte com timeout enquanto outra
+    // responde normalmente (mesmo sem achar preço) não deve bloquear o
+    // fallback de cotação direta automática abaixo.
     statusItem = 'ERRO';
     observacao = 'Todas as fontes automáticas falharam por erro de conexão. Reprocesse a pesquisa.';
   } else {
