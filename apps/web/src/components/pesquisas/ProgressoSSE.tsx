@@ -12,6 +12,7 @@ interface Props {
 }
 
 interface ItemLog {
+  sequencia: number;
   nome: string;
   status: 'COTADO' | 'SEM_RESULTADO' | 'ERRO';
   ts: number;
@@ -84,11 +85,15 @@ export default function ProgressoSSE({ pesquisaId }: Props) {
               const data = JSON.parse(line.slice(6)) as ProgressoPesquisa;
               setProgresso(data);
 
-              // Acumula log dos últimos 8 itens processados
+              // Acumula log dos últimos 8 itens processados. O SSE reenvia o
+              // snapshot completo a cada 2s (incluindo o último itemAtual)
+              // mesmo sem progresso novo — sem essa checagem, um item lento
+              // gera várias entradas duplicadas até o próximo concluir.
               if (data.itemAtual) {
                 setItemLog((prev) => {
+                  if (prev[0]?.sequencia === data.itemAtual!.sequencia) return prev;
                   const next = [
-                    { nome: data.itemAtual!.nome, status: data.itemAtual!.statusItem as ItemLog['status'], ts: Date.now() },
+                    { sequencia: data.itemAtual!.sequencia, nome: data.itemAtual!.nome, status: data.itemAtual!.statusItem as ItemLog['status'], ts: Date.now() },
                     ...prev,
                   ].slice(0, 8);
                   return next;
