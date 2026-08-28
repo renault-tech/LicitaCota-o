@@ -78,6 +78,33 @@ export async function resolverCandidatosCatalogo(
     .sort((a, b) => b.score - a.score);
 }
 
+/**
+ * Só para diagnóstico: devolve o melhor candidato por similaridade de
+ * trigrama, SEM aplicar o limiar de confiança — usado quando
+ * `resolverCandidatosCatalogo` não acha nada acima do limiar, para saber
+ * se chegou perto (ex.: score 0.3) ou se não tinha nada parecido de
+ * verdade no catálogo (score próximo de 0).
+ */
+export async function melhorCandidatoBruto(
+  descricaoItem: string,
+  tipo: 'MATERIAL' | 'SERVICO' = 'MATERIAL',
+): Promise<{ codigo: number; descricaoCatalogo: string; score: number } | null> {
+  const busca = normalizarChave(descricaoItem);
+  if (!busca) return null;
+
+  const candidatos = await prisma.$queryRawUnsafe<Array<{ codigo: number; descricao: string }>>(
+    `SELECT codigo, descricao FROM "CatalogoOficialItem"
+     WHERE tipo = $1::"TipoCatalogoOficial" AND ativo = true
+     ORDER BY descricao <-> $2
+     LIMIT 1`,
+    tipo,
+    busca,
+  );
+  const c = candidatos[0];
+  if (!c) return null;
+  return { codigo: c.codigo, descricaoCatalogo: c.descricao, score: pontuarCorrespondencia(busca, c.descricao) };
+}
+
 export async function resolverCodigoCatalogo(
   descricaoItem: string,
   tipo: 'MATERIAL' | 'SERVICO' = 'MATERIAL',

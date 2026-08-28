@@ -2,7 +2,7 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { resolverCandidatosCatalogo, resolverCandidatosCatalogoComFallback, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
+import { resolverCandidatosCatalogo, resolverCandidatosCatalogoComFallback, melhorCandidatoBruto, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
 
 /**
@@ -143,9 +143,20 @@ async function buscarPrecos(
   const tentados: Array<{ codigo: number; score: number; descricaoCatalogo: string }> = [];
   for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_COTACAO)) {
     tentados.push({ codigo: candidato.codigo, score: candidato.score, descricaoCatalogo: candidato.descricaoCatalogo });
-    const resultados = await buscarPorCodigo(candidato.codigo, item.uf, Math.max(limite * 10, 50), OPCOES_REQUISICAO_COTACAO);
-    const pontos = montarPontos(candidato, resultados, limite);
-    if (pontos.length > 0) return { pontos, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
+    const tamanhoPagina = Math.max(limite * 10, 50);
+    const resultadosRegionais = await buscarPorCodigo(candidato.codigo, item.uf, tamanhoPagina, OPCOES_REQUISICAO_COTACAO);
+    const pontosRegionais = montarPontos(candidato, resultadosRegionais, limite);
+    if (pontosRegionais.length > 0) return { pontos: pontosRegionais, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
+
+    // Sem preço na UF do item — cai para busca nacional (mesmo padrão já
+    // usado pelo PNCP: regional primeiro, nacional como fallback). Sem
+    // isso, um código com histórico de compra só fora do estado do item
+    // nunca aparecia, mesmo existindo preço de mercado real e comparável.
+    if (item.uf) {
+      const resultadosNacionais = await buscarPorCodigo(candidato.codigo, undefined, tamanhoPagina, OPCOES_REQUISICAO_COTACAO);
+      const pontosNacionais = montarPontos(candidato, resultadosNacionais, limite);
+      if (pontosNacionais.length > 0) return { pontos: pontosNacionais, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
+    }
   }
 
   // Nenhum candidato teve preço registrado — reporta o melhor código
@@ -162,7 +173,11 @@ export const comprasGovAdapter: FonteAdapter = {
       const { pontos, codigoResolvido, candidatosTentados } = await buscarPrecos(item, limite);
       if (codigoResolvido === null) {
         logger.info('Compras.gov.br: nenhum código de catálogo resolvido com confiança para o item — pulando fonte.');
-        return { pontos: [], diagnostico: 'Compras.gov.br: nenhum código de catálogo local passou no limiar de confiança (ver Fontes → catálogo sincronizado).' };
+        const bruto = await melhorCandidatoBruto(item.descricaoNormalizada, 'MATERIAL').catch(() => null);
+        const detalheBruto = bruto
+          ? ` Mais próximo (abaixo do limiar 0.35): código ${bruto.codigo} (score ${bruto.score.toFixed(2)}: "${bruto.descricaoCatalogo.slice(0, 60)}").`
+          : ' Nenhum item no catálogo local sequer se aproximou.';
+        return { pontos: [], diagnostico: `Compras.gov.br: nenhum código de catálogo local passou no limiar de confiança.${detalheBruto}` };
       }
       logger.info(`Compras.gov.br: ${pontos.length} preço(s) de fontes distintas (código ${codigoResolvido})`);
       const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
