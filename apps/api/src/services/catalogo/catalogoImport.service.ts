@@ -75,6 +75,23 @@ function celulaTexto(valor: ExcelJS.CellValue): string {
  * "inativo".includes('ativ') também é true — por isso a checagem de
  * ausência de "inativ" vem antes de qualquer outra coisa.
  */
+/**
+ * Remove aspas de envolvimento estilo CSV ("valor" -> valor, ""a""=""b"" ->
+ * a""b desfeito para a"b) de um campo já dividido pelo delimitador. Alguns
+ * exports de governo envolvem todo campo em aspas mesmo usando TAB como
+ * separador — sem isso, `Number.parseInt('"25852"')` falha (NaN) e a linha
+ * inteira é descartada silenciosamente, mesmo com o cabeçalho reconhecido
+ * corretamente (a normalização de cabeçalho já tolera aspas, mas o valor
+ * bruto do campo de dado não passava por essa mesma limpeza).
+ */
+function limparCampo(valor: string): string {
+  const v = valor.trim();
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    return v.slice(1, -1).replace(/""/g, '"').trim();
+  }
+  return v;
+}
+
 function interpretarAtivo(statusTexto: string): boolean {
   if (statusTexto === '') return true;
   if (statusTexto.includes('inativ')) return false;
@@ -242,17 +259,17 @@ export async function importarCsvTexto(
 
   for (let i = 1; i < linhas.length; i++) {
     const campos = linhas[i].split(delimitador);
-    const codigo = Number.parseInt((campos[colunas.codigo] ?? '').trim(), 10);
-    const descricao = (campos[colunas.descricao] ?? '').trim();
+    const codigo = Number.parseInt(limparCampo(campos[colunas.codigo] ?? ''), 10);
+    const descricao = limparCampo(campos[colunas.descricao] ?? '');
     if (!Number.isFinite(codigo) || !descricao) continue;
 
-    const statusTexto = colunas.status >= 0 ? (campos[colunas.status] ?? '').trim().toLowerCase() : '';
+    const statusTexto = colunas.status >= 0 ? limparCampo(campos[colunas.status] ?? '').toLowerCase() : '';
     lote.push({
       codigo,
       descricao,
-      grupo: colunas.grupo >= 0 ? ((campos[colunas.grupo] ?? '').trim() || null) : null,
-      classe: colunas.classe >= 0 ? ((campos[colunas.classe] ?? '').trim() || null) : null,
-      pdm: colunas.pdm >= 0 ? ((campos[colunas.pdm] ?? '').trim() || null) : null,
+      grupo: colunas.grupo >= 0 ? (limparCampo(campos[colunas.grupo] ?? '') || null) : null,
+      classe: colunas.classe >= 0 ? (limparCampo(campos[colunas.classe] ?? '') || null) : null,
+      pdm: colunas.pdm >= 0 ? (limparCampo(campos[colunas.pdm] ?? '') || null) : null,
       ativo: interpretarAtivo(statusTexto),
     });
 

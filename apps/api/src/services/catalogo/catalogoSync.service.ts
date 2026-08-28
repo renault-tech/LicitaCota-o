@@ -407,7 +407,15 @@ export function dispararImportacaoAutomaticaEmBackground(tipo: 'MATERIAL' | 'SER
     .then(async (processados) => {
       const estatisticas = await obterEstatisticasCatalogo();
       logger.info(`Catálogo oficial importado via CSV (${tipo}): ${processados} linha(s) reconhecida(s).`);
-      statusAtual.ultimoResultado = { materiais: estatisticas.materiais, servicos: estatisticas.servicos, erro: null };
+      // processados === 0 não é sucesso de verdade — o CSV baixou e o
+      // cabeçalho foi reconhecido, mas nenhuma linha de dado passou na
+      // validação (formato de campo inesperado, ex.: valores entre aspas).
+      // Sem essa checagem, isso aparecia como "importação concluída com
+      // sucesso" na tela mesmo sem gravar nada.
+      const erro = processados === 0
+        ? `O CSV foi baixado e o cabeçalho foi reconhecido, mas nenhuma linha de dado foi validada (0 processadas). Confira o formato dos valores.`
+        : null;
+      statusAtual.ultimoResultado = { materiais: estatisticas.materiais, servicos: estatisticas.servicos, erro };
     })
     .catch((e) => {
       logger.error(`Falha na importação automática do catálogo (${tipo})`, e);
