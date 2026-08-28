@@ -50,7 +50,9 @@ export default function FontesPage() {
   async function handleImportarAutomatico() {
     try {
       const res = await importarAutomatico.mutateAsync(tipoImportar);
-      toast.success(`Catálogo importado — ${res.processados.toLocaleString('pt-BR')} itens.`);
+      toast[res.disparou ? 'success' : 'info'](
+        res.disparou ? 'Importação do catálogo iniciada em segundo plano.' : 'Uma sincronização/importação já está em andamento.',
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao importar catálogo automaticamente');
     }
@@ -155,7 +157,7 @@ export default function FontesPage() {
                 />
                 <button
                   onClick={handleImportarAutomatico}
-                  disabled={importarAutomatico.isPending}
+                  disabled={catalogo.sincronizacao.emAndamento || importarAutomatico.isPending}
                   className="btn-ghost text-xs px-3 py-1.5"
                   title="Baixar e importar automaticamente (direto de repositorio.dados.gov.br, sem sair do app)"
                 >

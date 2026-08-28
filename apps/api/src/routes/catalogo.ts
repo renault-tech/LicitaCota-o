@@ -7,8 +7,9 @@ import {
   obterStatusSincronizacao,
   obterEstatisticasCatalogo,
   dispararSincronizacaoEmBackground,
+  dispararImportacaoAutomaticaEmBackground,
 } from '../services/catalogo/catalogoSync.service.js';
-import { importarWorkbook, importarCatalogoAutomatico } from '../services/catalogo/catalogoImport.service.js';
+import { importarWorkbook } from '../services/catalogo/catalogoImport.service.js';
 
 const router: Router = Router();
 
@@ -56,15 +57,18 @@ router.post('/importar', autenticar, exigirRole('ADMIN'), upload.single('arquivo
   } catch (e) { next(e); }
 });
 
-// POST /api/catalogo/importar-automatico — baixa e importa o CSV oficial
-// direto de repositorio.dados.gov.br, somente ADMIN. Diferente da página
-// www.gov.br/compras/.../planilha-catmat-catser (exige login), este
-// endpoint é público — não cai em tela de "Conteúdo Restrito".
-router.post('/importar-automatico', autenticar, exigirRole('ADMIN'), async (req, res, next) => {
+// POST /api/catalogo/importar-automatico — dispara em segundo plano o
+// download+importação do CSV oficial direto de repositorio.dados.gov.br,
+// somente ADMIN. Diferente da página www.gov.br/compras/.../
+// planilha-catmat-catser (exige login), este endpoint é público — não cai
+// em tela de "Conteúdo Restrito". Roda em background (mesmo padrão de
+// /sincronizar) porque o CATMAT tem ~340 mil linhas — síncrono numa única
+// requisição HTTP estoura o timeout do proxy do Render antes de terminar.
+router.post('/importar-automatico', autenticar, exigirRole('ADMIN'), (req, res, next) => {
   try {
     const { tipo } = z.object({ tipo: z.enum(['MATERIAL', 'SERVICO']) }).parse(req.body);
-    const processados = await importarCatalogoAutomatico(tipo);
-    res.json({ ok: true, tipo, processados });
+    const disparou = dispararImportacaoAutomaticaEmBackground(tipo);
+    res.json({ ok: true, disparou });
   } catch (e) { next(e); }
 });
 

@@ -1,6 +1,7 @@
 import { prisma } from '../../config/prisma.js';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
+import { importarCatalogoAutomatico } from './catalogoImport.service.js';
 
 /**
  * Sincronização do catálogo oficial CATMAT/CATSER (SIASG/Compras.gov.br).
@@ -383,6 +384,45 @@ export async function sincronizarCatalogo(): Promise<ResultadoSincronizacao> {
 export function dispararSincronizacaoEmBackground(): boolean {
   if (statusAtual.emAndamento) return false;
   sincronizarCatalogo().catch((e) => logger.error('Falha na sincronização do catálogo oficial', e));
+  return true;
+}
+
+/**
+ * Importa o catálogo via CSV (repositorio.dados.gov.br) em segundo plano,
+ * reaproveitando o mesmo `statusAtual` da sincronização paginada — o
+ * download+parse+gravação de ~340 mil linhas do CATMAT não cabe numa única
+ * requisição HTTP síncrona (o proxy do Render derruba a conexão antes de
+ * terminar, gerando "Failed to fetch" no navegador sem nenhum erro de
+ * aplicação de verdade). Mesmo padrão de `dispararSincronizacaoEmBackground`:
+ * a rota só dispara e retorna na hora, o front acompanha via polling em
+ * `obterStatusSincronizacao` (já usado pela tela de Fontes).
+ */
+export function dispararImportacaoAutomaticaEmBackground(tipo: 'MATERIAL' | 'SERVICO'): boolean {
+  if (statusAtual.emAndamento) return false;
+  statusAtual.emAndamento = true;
+  statusAtual.iniciadoEm = new Date().toISOString();
+  statusAtual.progresso = null;
+
+  importarCatalogoAutomatico(tipo)
+    .then(async (processados) => {
+      const estatisticas = await obterEstatisticasCatalogo();
+      logger.info(`Catálogo oficial importado via CSV (${tipo}): ${processados} linha(s) reconhecida(s).`);
+      statusAtual.ultimoResultado = { materiais: estatisticas.materiais, servicos: estatisticas.servicos, erro: null };
+    })
+    .catch((e) => {
+      logger.error(`Falha na importação automática do catálogo (${tipo})`, e);
+      statusAtual.ultimoResultado = {
+        materiais: 0,
+        servicos: 0,
+        erro: e instanceof Error ? e.message : String(e),
+      };
+    })
+    .finally(() => {
+      statusAtual.emAndamento = false;
+      statusAtual.concluidoEm = new Date().toISOString();
+      statusAtual.progresso = null;
+    });
+
   return true;
 }
 
