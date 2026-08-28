@@ -205,14 +205,35 @@ export async function importarCsvTexto(
     .filter((l) => l.length > 0);
   if (linhas.length === 0) throw new Error('Arquivo CSV vazio.');
 
-  const cabecalho = linhas[0].split('\t').map((c) => c.trim());
+  // Detecta o delimitador em vez de assumir TAB fixo — os arquivos reais
+  // confirmados usam TAB, mas se a URL um dia passar a servir algo diferente
+  // (ou uma página de erro/redirecionamento em vez do CSV), é melhor
+  // adaptar automaticamente do que falhar sempre com a mesma mensagem
+  // genérica. Conta ocorrências na linha de cabeçalho e usa o delimitador
+  // mais frequente entre TAB, vírgula e ponto-e-vírgula.
+  const linhaCabecalho = linhas[0];
+  const contagens: Array<[string, number]> = [
+    ['\t', (linhaCabecalho.match(/\t/g) ?? []).length],
+    [';', (linhaCabecalho.match(/;/g) ?? []).length],
+    [',', (linhaCabecalho.match(/,/g) ?? []).length],
+  ];
+  const [delimitador] = contagens.reduce((a, b) => (b[1] > a[1] ? b : a));
+
+  const cabecalho = linhaCabecalho.split(delimitador).map((c) => c.trim());
   const colunas: Record<Campo, number> = { codigo: -1, descricao: -1, grupo: -1, classe: -1, pdm: -1, status: -1 };
   cabecalho.forEach((titulo, idx) => {
     const campo = classificarColuna(titulo);
     if (campo) colunas[campo] = idx;
   });
   if (colunas.codigo < 0 || colunas.descricao < 0) {
-    throw new Error('Não encontrei as colunas de código/descrição no CSV — confira o formato.');
+    // Diagnóstico real em vez de mensagem genérica — mostra exatamente o
+    // que foi recebido, para não precisar adivinhar de novo se o formato
+    // mudar (ex.: a URL passou a devolver uma página HTML de erro).
+    const amostraCabecalho = linhaCabecalho.slice(0, 300);
+    throw new Error(
+      `Não encontrei as colunas de código/descrição no CSV (delimitador detectado: ` +
+      `${delimitador === '\t' ? 'TAB' : delimitador}). Cabeçalho recebido: "${amostraCabecalho}"`,
+    );
   }
 
   const totalEstimado = Math.max(0, linhas.length - 1);
@@ -220,7 +241,7 @@ export async function importarCsvTexto(
   let processados = 0;
 
   for (let i = 1; i < linhas.length; i++) {
-    const campos = linhas[i].split('\t');
+    const campos = linhas[i].split(delimitador);
     const codigo = Number.parseInt((campos[colunas.codigo] ?? '').trim(), 10);
     const descricao = (campos[colunas.descricao] ?? '').trim();
     if (!Number.isFinite(codigo) || !descricao) continue;
@@ -266,7 +287,16 @@ async function baixarTexto(url: string, timeoutMs = 60000): Promise<string> {
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`Download do CSV respondeu HTTP ${resp.status}.`);
-    return await resp.text();
+    const texto = await resp.text();
+    // Se a URL passar a redirecionar para uma página de erro/login em vez
+    // do arquivo bruto, isso aparece aqui como HTML em vez de CSV — melhor
+    // detectar cedo com uma mensagem clara do que deixar cair na mensagem
+    // genérica de "colunas não encontradas" mais adiante.
+    const inicio = texto.trimStart().slice(0, 20).toLowerCase();
+    if (inicio.startsWith('<!doctype') || inicio.startsWith('<html')) {
+      throw new Error(`A URL devolveu uma página HTML em vez do CSV — content-type: ${resp.headers.get('content-type') ?? 'desconhecido'}.`);
+    }
+    return texto;
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') throw new Error(`Tempo de resposta excedido (timeout de ${timeoutMs}ms) ao baixar o CSV.`);
     throw e;

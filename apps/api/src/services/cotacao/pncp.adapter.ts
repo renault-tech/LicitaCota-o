@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
@@ -236,6 +237,19 @@ export const pncpAdapter: FonteAdapter = {
 
   async testar(_config: FonteCotacao, _itemAmostra: string): Promise<TesteResultado> {
     const inicio = Date.now();
+    // Diagnóstico: resolve o DNS separadamente antes do fetch, para
+    // distinguir "não resolve o nome" (bloqueio de DNS) de "resolve mas a
+    // conexão trava" (bloqueio de firewall/rede no caminho até o servidor,
+    // mais provável dado que o erro observado é sempre timeout, não recusa
+    // rápida) — sem esse dado, "timeout" sozinho não diz qual dos dois é.
+    let dnsInfo = '';
+    try {
+      const dnsInicio = Date.now();
+      const enderecos = await lookup('pncp.gov.br');
+      dnsInfo = `DNS resolveu para ${enderecos.address} em ${Date.now() - dnsInicio}ms. `;
+    } catch (e) {
+      dnsInfo = `DNS FALHOU: ${e instanceof Error ? e.message : String(e)}. `;
+    }
     try {
       const hoje = new Date();
       const ini = diasAtras(30);
@@ -250,18 +264,18 @@ export const pncpAdapter: FonteAdapter = {
       const resp = await requisitar(url, { timeoutMs: 20000, retries: 0 });
       const latenciaMs = Date.now() - inicio;
       if (!resp.ok) {
-        return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `PNCP respondeu HTTP ${resp.status}.`, dadosBrutos: null };
+        return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `${dnsInfo}PNCP respondeu HTTP ${resp.status}.`, dadosBrutos: null };
       }
       const body = resp.corpoJson as { totalRegistros?: number; totalPaginas?: number } | null;
       return {
         ok: true, latenciaMs, amostraPreco: null, amostraReferencia: null,
-        mensagem: `PNCP acessível — ${body?.totalRegistros?.toLocaleString('pt-BR')} contratações em ${latenciaMs}ms.`,
+        mensagem: `${dnsInfo}PNCP acessível — ${body?.totalRegistros?.toLocaleString('pt-BR')} contratações em ${latenciaMs}ms.`,
         dadosBrutos: { totalRegistros: body?.totalRegistros, totalPaginas: body?.totalPaginas },
       };
     } catch (e) {
       return {
         ok: false, latenciaMs: Date.now() - inicio, amostraPreco: null, amostraReferencia: null,
-        mensagem: e instanceof Error ? `Falha: ${e.message}` : 'Falha de conexão.', dadosBrutos: null,
+        mensagem: `${dnsInfo}Falha: ${e instanceof Error ? e.message : 'Falha de conexão.'}`, dadosBrutos: null,
       };
     }
   },
