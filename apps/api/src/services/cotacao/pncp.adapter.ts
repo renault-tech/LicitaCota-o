@@ -223,7 +223,15 @@ export const pncpAdapter: FonteAdapter = {
       const hoje = new Date();
       const ini = diasAtras(30);
       const url = `${BASE_CONSULTA}/v1/contratacoes/publicacao?dataInicial=${fmt(ini)}&dataFinal=${fmt(hoje)}&pagina=1&tamanhoPagina=10`;
-      const resp = await requisitar(url, { timeoutMs: 12000, retries: 1 });
+      // Timeout bem mais generoso que o usado durante o processamento real
+      // (12s) — ação isolada do admin, não está no caminho de uma pesquisa
+      // com vários itens. Serve de diagnóstico: se falhar mesmo com 30s, é
+      // sinal de que o PNCP está de fato fora do ar, não só lento; se
+      // funcionar, o endpoint só é mais lento que 12s (provavelmente por
+      // não filtrarmos codigoModalidadeContratacao, que a documentação do
+      // PNCP lista como parâmetro esperado — sem ele, a consulta parece
+      // varrer todas as modalidades no período, mais cara que o normal).
+      const resp = await requisitar(url, { timeoutMs: 30000, retries: 0 });
       const latenciaMs = Date.now() - inicio;
       if (!resp.ok) {
         return { ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null, mensagem: `PNCP respondeu HTTP ${resp.status}.`, dadosBrutos: null };
