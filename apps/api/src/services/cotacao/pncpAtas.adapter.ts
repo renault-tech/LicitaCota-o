@@ -1,8 +1,8 @@
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
-import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
 import type { FonteAdapter } from './adapter.js';
+import { requisitarComprasGov } from './comprasGovHttp.js';
 import { resolverItemNoCatalogo } from './resolucaoCatalogo.js';
 
 /**
@@ -58,7 +58,7 @@ async function consultarAtas(codigoItem: number, tamanhoPagina = 50): Promise<It
     dataVigenciaInicialMin: isoDiasAtras(JANELA_DIAS),
     dataVigenciaInicialMax: isoDiasAtras(0),
   });
-  const resp = await requisitar(`${URL_ARP_ITEM}?${params.toString()}`, OPCOES_REQUISICAO);
+  const resp = await requisitarComprasGov(`${URL_ARP_ITEM}?${params.toString()}`, OPCOES_REQUISICAO);
   if (resp.status === 404) return [];
   if (!resp.ok) throw new Error(`Compras.gov.br (Atas) respondeu HTTP ${resp.status}.`);
   const corpo = resp.corpoJson as { resultado?: ItemAta[] } | null;
@@ -77,9 +77,18 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ po
   const passos: string[] = [];
 
   const consultas = await Promise.all(
-    candidatos.slice(0, MAX_CANDIDATOS).map(async (c) => ({ c, linhas: await consultarAtas(c.codigo) })),
+    candidatos.slice(0, MAX_CANDIDATOS).map(async (c) => {
+      try {
+        return { c, linhas: await consultarAtas(c.codigo), erro: null };
+      } catch (e) {
+        return { c, linhas: [] as ItemAta[], erro: e instanceof Error ? e : new Error(String(e)) };
+      }
+    }),
   );
-  for (const { c, linhas } of consultas) {
+  const falhas = consultas.filter((x) => x.erro);
+  if (falhas.length > 0 && falhas.length === consultas.length) throw falhas[0].erro;
+  for (const { c, linhas, erro } of consultas) {
+    if (erro) { passos.push(`código ${c.codigo}: falhou (${erro.message})`); continue; }
     let aproveitadas = 0;
     // Mais recentes primeiro.
     linhas.sort((a, b) => (b.dataAssinatura ?? '').localeCompare(a.dataAssinatura ?? ''));

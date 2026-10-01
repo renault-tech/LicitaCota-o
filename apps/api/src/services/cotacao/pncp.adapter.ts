@@ -154,7 +154,7 @@ function montarJanelas(uf: string | undefined): Janela[] {
 /** Esta API não filtra por item: a varredura de contratações é uma amostra
  * e não pode segurar a pesquisa inteira — as fontes por código (Painel de
  * Preços, Atas) rodam em paralelo e são as principais. */
-const ORCAMENTO_MS = 25000;
+const ORCAMENTO_MS = 15000;
 
 async function buscarPrecos(
   item: ItemNormalizado,

@@ -1,10 +1,10 @@
 import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
-import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
 import { pontuarCorrespondencia } from '../../utils/matching.js';
 import { melhorCandidatoBruto, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
+import { requisitarComprasGov } from './comprasGovHttp.js';
 import { textosParaCatalogo } from './normalizacao.service.js';
 import { resolverItemNoCatalogo, contemNucleo } from './resolucaoCatalogo.js';
 
@@ -83,7 +83,7 @@ async function consultarPrecos(
     params.set('codigoItemCatalogo', String(codigo));
   }
   if (estado) params.set('estado', estado);
-  const resp = await requisitar(`${BASE}/${caminho}?${params.toString()}`, OPCOES_REQUISICAO);
+  const resp = await requisitarComprasGov(`${BASE}/${caminho}?${params.toString()}`, OPCOES_REQUISICAO);
   if (resp.status === 404) return [];
   if (!resp.ok) throw new Error(`Compras.gov.br respondeu HTTP ${resp.status}.`);
   const corpo = resp.corpoJson as { resultado?: ResultadoBruto[] } | ResultadoBruto[] | null;
@@ -233,12 +233,18 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busc
   // Uma consulta nacional por código (mais recentes primeiro); a preferência
   // pela UF do item é aplicada na seleção, sem dobrar as chamadas.
   const linhas: Linha[] = [];
-  const porCodigo = await emParalelo(candidatos.slice(0, MAX_CANDIDATOS), CONCORRENCIA, async (c) => ({
-    c,
-    rows: await consultarPrecos(rota, 'codigoItemCatalogo', c.codigo, undefined, 100),
-  }));
-  for (const { c, rows } of porCodigo) {
-    passos.push(`código ${c.codigo}: ${rows.length} compras`);
+  const porCodigo = await emParalelo(candidatos.slice(0, MAX_CANDIDATOS), CONCORRENCIA, async (c) => {
+    try {
+      return { c, rows: await consultarPrecos(rota, 'codigoItemCatalogo', c.codigo, undefined, 100), erro: null };
+    } catch (e) {
+      return { c, rows: [] as ResultadoBruto[], erro: e instanceof Error ? e : new Error(String(e)) };
+    }
+  });
+  // Um código com falha não derruba a fonte; só é erro se todos falharem.
+  const falhas = porCodigo.filter((x) => x.erro);
+  if (falhas.length === porCodigo.length) throw falhas[0].erro;
+  for (const { c, rows, erro } of porCodigo) {
+    passos.push(erro ? `código ${c.codigo}: falhou (${erro.message})` : `código ${c.codigo}: ${rows.length} compras`);
     for (const r of rows) linhas.push({ r, origem: 'código exato', scoreDescricao: null });
   }
 
@@ -248,7 +254,7 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busc
     const pdms = [...new Set(candidatos.slice(0, MAX_CANDIDATOS).map((c) => c.pdm).filter((p): p is string => !!p))].slice(0, MAX_PDMS);
     const porPdm = await emParalelo(pdms, CONCORRENCIA, async (pdm) => ({
       pdm,
-      rows: await consultarPrecos('MATERIAL', 'codigoPdm', pdm, undefined, 200),
+      rows: await consultarPrecos('MATERIAL', 'codigoPdm', pdm, undefined, 200).catch(() => [] as ResultadoBruto[]),
     }));
     for (const { pdm, rows } of porPdm) {
       let aceitas = 0;

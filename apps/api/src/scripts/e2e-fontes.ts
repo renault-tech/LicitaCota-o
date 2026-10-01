@@ -37,24 +37,36 @@ async function main(): Promise<void> {
   }
   await garantirIndiceTrigram();
 
+  // Mesma concorrência do worker (5 itens simultâneos), para exercitar o
+  // limite de requisições do Compras.gov.br como em produção.
+  const saidas: string[] = new Array(ITENS.length);
   let comPreco = 0;
-  for (const [texto, unidadeMedida] of ITENS) {
-    const item = { ...montarItemNormalizado({ nome: texto, descricao: texto, quantidade: 1, unidadeMedida, uf: 'MG' }, []) };
-    const inicio = Date.now();
-    const resolvido = await resolverItemNoCatalogo(item);
-    const [cg, atas] = await Promise.all([
-      comprasGovAdapter.consultar(item, config),
-      pncpAtasAdapter.consultar(item, config),
-    ]);
-    const precos = [...cg.pontos, ...atas.pontos];
-    if (precos.length > 0) comPreco++;
-    console.log(`\n### ${texto} [${unidadeMedida}]  (${Date.now() - inicio}ms)`);
-    console.log(`  catálogo (${resolvido.rota}, texto "${resolvido.texto}"): ${resolvido.candidatos.slice(0, 3).map((c) => `${c.codigo} "${c.descricaoCatalogo.slice(0, 70)}" ${c.score.toFixed(2)}`).join(' | ') || 'nenhum'}`);
-    console.log(`  Painel de Preços: ${cg.pontos.length} preço(s)${cg.erro ? ` ERRO ${cg.erro}` : ''}${cg.diagnostico ? ` — ${cg.diagnostico}` : ''}`);
-    for (const p of cg.pontos) console.log(`    R$ ${p.preco.toFixed(2)}  ${(p.dadosBrutos as { descricaoItem?: string }).descricaoItem?.slice(0, 60)}  | ${p.referencia.slice(0, 150)}`);
-    console.log(`  Atas PNCP: ${atas.pontos.length} preço(s)${atas.erro ? ` ERRO ${atas.erro}` : ''}${atas.diagnostico ? ` — ${atas.diagnostico}` : ''}`);
-    for (const p of atas.pontos) console.log(`    R$ ${p.preco.toFixed(2)}  ${(p.dadosBrutos as { descricaoItem?: string }).descricaoItem?.slice(0, 60)}  | ${p.referencia.slice(0, 150)}`);
-  }
+  let proximo = 0;
+  const inicioGeral = Date.now();
+  await Promise.all(Array.from({ length: 5 }, async () => {
+    while (proximo < ITENS.length) {
+      const idx = proximo++;
+      const [texto, unidadeMedida] = ITENS[idx];
+      const item = { ...montarItemNormalizado({ nome: texto, descricao: texto, quantidade: 1, unidadeMedida, uf: 'MG' }, []) };
+      const inicio = Date.now();
+      const resolvido = await resolverItemNoCatalogo(item);
+      const [cg, atas] = await Promise.all([
+        comprasGovAdapter.consultar(item, config),
+        pncpAtasAdapter.consultar(item, config),
+      ]);
+      if (cg.pontos.length + atas.pontos.length > 0) comPreco++;
+      const l: string[] = [];
+      l.push(`\n### ${texto} [${unidadeMedida}]  (${Date.now() - inicio}ms)`);
+      l.push(`  catálogo (${resolvido.rota}, texto "${resolvido.texto}"): ${resolvido.candidatos.slice(0, 3).map((c) => `${c.codigo} "${c.descricaoCatalogo.slice(0, 70)}" ${c.score.toFixed(2)}`).join(' | ') || 'nenhum'}`);
+      l.push(`  Painel de Preços: ${cg.pontos.length} preço(s)${cg.erro ? ` ERRO ${cg.erro}` : ''}${cg.diagnostico ? ` — ${cg.diagnostico}` : ''}`);
+      for (const p of cg.pontos) l.push(`    R$ ${p.preco.toFixed(2)}  ${(p.dadosBrutos as { descricaoItem?: string }).descricaoItem?.slice(0, 60)}  | ${p.referencia.slice(0, 160)}`);
+      l.push(`  Atas PNCP: ${atas.pontos.length} preço(s)${atas.erro ? ` ERRO ${atas.erro}` : ''}${atas.diagnostico ? ` — ${atas.diagnostico}` : ''}`);
+      for (const p of atas.pontos) l.push(`    R$ ${p.preco.toFixed(2)}  ${(p.dadosBrutos as { descricaoItem?: string }).descricaoItem?.slice(0, 60)}  | ${p.referencia.slice(0, 160)}`);
+      saidas[idx] = l.join('\n');
+    }
+  }));
+  for (const s of saidas) console.log(s);
+  console.log(`\nTempo total: ${Math.round((Date.now() - inicioGeral) / 1000)}s`);
   console.log(`\nRESUMO: ${comPreco}/${ITENS.length} itens com preço.`);
   await prisma.$disconnect();
 }
