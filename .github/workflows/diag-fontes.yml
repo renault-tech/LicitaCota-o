@@ -20,28 +20,26 @@ jobs:
                   params = [x.get('name') + ('*' if x.get('required') else '') for x in op.get('parameters', [])]
                   print(p, ' '.join(params))
           EOF
-      - name: Testes de preco
+      - name: Testes PNCP via Compras e ARP
         run: |
           B=https://dadosabertos.compras.gov.br
-          show() { echo "=================== $1"; curl -sS -m 40 -w '\nHTTP %{http_code} em %{time_total}s\n' "$B/$1" > out.txt || true; python3 - <<'EOF'
+          D1=$(date -d '-365 days' +%Y-%m-%d); D2=$(date +%Y-%m-%d)
+          show() { echo "=================== $1"; curl -sS -m 60 -w '\nHTTP %{http_code} em %{time_total}s\n' "$B/$1" > out.txt || true; python3 - <<'PY'
           import json
           raw = open('out.txt').read()
-          body, _, tail = raw.rpartition('\n{') if False else (raw, '', '')
           try:
               j = json.loads(raw[:raw.rfind('\nHTTP')])
           except Exception:
-              print(raw[:600]); raise SystemExit
+              print(raw[:800]); raise SystemExit
           res = j.get('resultado') if isinstance(j, dict) else j
-          print('chaves:', list(j.keys()) if isinstance(j, dict) else 'lista', '| totalRegistros:', j.get('totalRegistros') if isinstance(j, dict) else None, '| n:', len(res or []))
-          for r in (res or [])[:4]:
-              print('  ', {k: r.get(k) for k in ('codigoItemCatalogo','codigoItem','codigoPdm','precoUnitario','valorUnitarioHomologado','descricaoItem','nomeOrgao','estado','dataResultado','dataCompra','codigoServico','nomePdm')})
+          print('chaves:', list(j.keys()) if isinstance(j, dict) else 'lista', '| total:', j.get('totalRegistros') if isinstance(j, dict) else None, '| n:', len(res or []))
+          for r in (res or [])[:2]:
+              print(json.dumps(r, ensure_ascii=False)[:1800])
           print(raw[raw.rfind('\nHTTP'):].strip())
-          EOF
+          PY
           }
-          show "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoItemCatalogo&codigo=443990&estado=MG"
-          show "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoPdm&codigo=5080"
-          show "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoPdm&codigo=5080&estado=SP"
-          show "modulo-material/4_consultarItemMaterial?pagina=1&tamanhoPagina=10&descricaoItem=caneta%20esferografica"
-          show "modulo-material/3_consultarPdmMaterial?pagina=1&tamanhoPagina=10&nomePdm=caneta"
-          show "modulo-servico/6_consultarItemServico?pagina=1&tamanhoPagina=10&descricaoServico=limpeza"
-          show "modulo-pesquisa-preco/3_consultarServico?pagina=1&tamanhoPagina=10&codigoItemCatalogo=24325"
+          show "modulo-contratacoes/2_consultarItensContratacoes_PNCP_14133?pagina=1&tamanhoPagina=10&codItemCatalogo=443990&dataInclusaoPncpInicial=$D1&dataInclusaoPncpFinal=$D2"
+          show "modulo-contratacoes/2_consultarItensContratacoes_PNCP_14133?pagina=1&tamanhoPagina=10&codigoPdm=5080&temResultado=true&dataInclusaoPncpInicial=$D1&dataInclusaoPncpFinal=$D2"
+          show "modulo-arp/2_consultarARPItem?pagina=1&tamanhoPagina=10&codigoItem=443990&dataVigenciaInicialMin=$D1&dataVigenciaInicialMax=$D2"
+          show "modulo-arp/2_consultarARPItem?pagina=1&tamanhoPagina=10&codigoPdm=5080&dataVigenciaInicialMin=$D1&dataVigenciaInicialMax=$D2"
+          show "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoPdm&codigo=5080&dataCompraInicio=$D1"
