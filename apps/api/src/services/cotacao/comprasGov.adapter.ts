@@ -60,20 +60,43 @@ async function buscarPorCodigo(
   tamanhoPagina: number,
   opcoesRequisicao: { timeoutMs: number; retries: number } = { timeoutMs: 15000, retries: 1 },
 ): Promise<ResultadoBruto[]> {
+  // O contrato desse endpoint mudou (sem versionamento): o parâmetro antigo
+  // `codigoItemCatalogo=<int>` foi substituído pelo par `tipo` (enum
+  // codigoItemCatalogo|codigoPdm) + `codigo` (string) — confirmado via
+  // documentação pública de terceiros que mantêm integrações com essa API
+  // (não há acesso de rede a .gov.br neste ambiente para confirmar
+  // diretamente). Com o parâmetro antigo, a API responde 404 — que o código
+  // abaixo trata como "sem preço registrado", mascarando a quebra de
+  // contrato como "nenhum histórico de compra" para todo item, sempre. Essa
+  // era a causa raiz de 0 preços encontrados mesmo para itens comuns.
   const params = new URLSearchParams({
     pagina: '1',
     tamanhoPagina: String(tamanhoPagina),
-    codigoItemCatalogo: String(codigoItemCatalogo),
+    tipo: 'codigoItemCatalogo',
+    codigo: String(codigoItemCatalogo),
   });
   if (uf) params.set('uf', uf);
   const url = `${BASE}/1_consultarMaterial?${params.toString()}`;
   const resp = await requisitar(url, opcoesRequisicao);
-  // 404 aqui não é "endpoint errado" (path e parâmetros batem com a
-  // documentação oficial) — é como essa API sinaliza "nenhum preço
-  // registrado para este código de catálogo". Um código sem histórico de
-  // compra é normal (nem todo item do CATMAT já foi comprado recentemente),
-  // não uma falha de conexão.
-  if (resp.status === 404) return [];
+  if (resp.status === 404) {
+    // Sem acesso de rede a .gov.br neste ambiente para confirmar o novo
+    // contrato ao vivo — se o 404 persistir mesmo com `tipo`+`codigo`,
+    // tenta uma vez com o parâmetro legado (`codigoItemCatalogo`) antes de
+    // concluir "sem preço registrado". Protege contra a correção acima
+    // estar errada ou a API reverter a mudança.
+    const paramsLegado = new URLSearchParams({
+      pagina: '1',
+      tamanhoPagina: String(tamanhoPagina),
+      codigoItemCatalogo: String(codigoItemCatalogo),
+    });
+    if (uf) paramsLegado.set('uf', uf);
+    const respLegado = await requisitar(`${BASE}/1_consultarMaterial?${paramsLegado.toString()}`, opcoesRequisicao);
+    // 404 em ambas as tentativas é como essa API sinaliza "nenhum preço
+    // registrado para este código de catálogo" — não uma falha de conexão.
+    if (respLegado.status === 404) return [];
+    if (!respLegado.ok) throw new Error(`Compras.gov.br respondeu HTTP ${respLegado.status}.`);
+    return extrairResultados(respLegado.corpoJson);
+  }
   if (!resp.ok) throw new Error(`Compras.gov.br respondeu HTTP ${resp.status}.`);
   return extrairResultados(resp.corpoJson);
 }
