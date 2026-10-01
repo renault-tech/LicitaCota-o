@@ -2,189 +2,220 @@ import type { FonteCotacao } from '@prisma/client';
 import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultado } from '@licitapreco/shared';
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
-import { resolverCandidatosCatalogo, resolverCandidatosCatalogoComFallback, melhorCandidatoBruto, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
+import { pontuarCorrespondencia } from '../../utils/matching.js';
+import {
+  resolverCandidatosCatalogo,
+  resolverCandidatosCatalogoComFallback,
+  melhorCandidatoBruto,
+  type CodigoCatalogoResolvido,
+} from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
 
 /**
- * Adapter do Compras.gov.br — "Módulo Pesquisa de Preço" do Portal de Dados
- * Abertos, a fonte que a IN SEGES/ME 65/2021 cita em primeiro lugar
- * (art. 5º, I). Diferente do PNCP, este módulo busca por CÓDIGO de catálogo
- * (CATMAT/CATSER) — não aceita descrição livre (`descricao` não é um
- * parâmetro válido; confirmado contra a documentação pública, que só lista
- * `codigoItemCatalogo` como filtro de item).
+ * Adapter do Compras.gov.br — "Módulo Pesquisa de Preço" (Painel de Preços)
+ * do Portal de Dados Abertos, fonte citada em primeiro lugar pela IN
+ * SEGES/ME 65/2021 (art. 5º, I).
  *
- * Por isso, antes de consultar preço, resolvemos a descrição do item para
- * uma lista de códigos candidatos via `resolverCandidatosCatalogoComFallback`
- * — busca local contra o catálogo oficial sincronizado (ver
- * catalogoSync.service.ts) e, só se a busca local não achar nada, uma
- * última tentativa via catmat.com.br (terceiro, desligado por padrão — ver
- * catmatFallback.service.ts). Em ambos os casos, o código sugerido ainda
- * precisa passar pela consulta de preço oficial abaixo antes de virar
- * resultado — o fallback nunca fornece preço, só um código candidato a mais.
- * O catálogo tem centenas de milhares de códigos, muitos quase idênticos
- * (variações de cor/material de um mesmo item); o Painel de Preços só tem
- * histórico para códigos já efetivamente comprados, então tentamos os
- * candidatos em ordem de score até um devolver preço real, em vez de parar
- * no melhor match textual isolado. Sem nenhum candidato com confiança
- * suficiente, a fonte não retorna preço para este item (evita citar preço
- * de item errado).
+ * Contrato da API confirmado ao vivo contra dadosabertos.compras.gov.br
+ * (Swagger em /v3/api-docs + respostas reais, out/2026):
+ * - Materiais: `1_consultarMaterial?tipo=codigoItemCatalogo|codigoPdm&codigo=N`.
+ *   O parâmetro antigo `codigoItemCatalogo=N` hoje responde 404 — era o
+ *   motivo de nenhuma pesquisa encontrar preço.
+ * - Serviços: `3_consultarServico?codigoItemCatalogo=N`.
+ * - Filtro por UF chama-se `estado` (não `uf`; `uf` é ignorado em silêncio).
+ * - Resposta: `{ resultado: [...], totalRegistros, totalPaginas }`, mais
+ *   recentes primeiro; cada linha traz precoUnitario, descricaoItem,
+ *   nomeOrgao, estado, dataResultado/dataCompra, unidade de fornecimento.
+ *
+ * Estratégia (para ao atingir `limite` preços de fontes distintas):
+ *  1. Códigos exatos do catálogo que correspondem ao item (até 3): primeiro
+ *     no estado do item, depois nacional.
+ *  2. Se ainda faltar preço e for material: a família do produto (PDM) do
+ *     melhor candidato — cobre o caso comum de o código exato nunca ter sido
+ *     comprado enquanto variantes quase idênticas foram. Cada linha da
+ *     família só entra se a descrição dela também corresponder ao item.
+ * Só entram compras dos últimos 12 meses (IN 65/2021, art. 5º, I).
  */
 
 const BASE = 'https://dadosabertos.compras.gov.br/modulo-pesquisa-preco';
+const MAX_CANDIDATOS = 3;
+const JANELA_DIAS = 365;
+/** Linhas de PDM são de itens parecidos, não idênticos — exige que a própria
+ * descrição da linha corresponda ao item pesquisado. */
+const LIMIAR_LINHA_PDM = 0.35;
+const OPCOES_REQUISICAO = { timeoutMs: 12000, retries: 1 };
 
 interface ResultadoBruto {
+  idCompra?: string | number;
+  codigoItemCatalogo?: number;
   descricaoItem?: string;
-  descricao?: string;
   precoUnitario?: number;
-  valorUnitario?: number;
-  nomeUnidadeFornecimento?: string;
+  siglaUnidadeFornecimento?: string | null;
+  nomeUnidadeFornecimento?: string | null;
+  siglaUnidadeMedida?: string | null;
   dataCompra?: string;
   dataResultado?: string;
   nomeOrgao?: string;
-  siglaUf?: string;
+  nomeUasg?: string;
+  estado?: string;
+  municipio?: string;
+  nomeFornecedor?: string;
 }
 
-function extrairResultados(corpo: unknown): ResultadoBruto[] {
-  if (Array.isArray(corpo)) return corpo as ResultadoBruto[];
-  const obj = corpo as Record<string, unknown> | null;
-  if (!obj) return [];
-  if (Array.isArray(obj.resultado)) return obj.resultado as ResultadoBruto[];
-  if (Array.isArray(obj.content)) return obj.content as ResultadoBruto[];
-  if (Array.isArray(obj._embedded)) return obj._embedded as ResultadoBruto[];
-  return [];
-}
+type Rota = 'MATERIAL' | 'SERVICO';
 
-async function buscarPorCodigo(
-  codigoItemCatalogo: number,
-  uf: string | undefined,
+async function consultarPrecos(
+  rota: Rota,
+  tipoCodigo: 'codigoItemCatalogo' | 'codigoPdm',
+  codigo: string | number,
+  estado: string | undefined,
   tamanhoPagina: number,
-  opcoesRequisicao: { timeoutMs: number; retries: number } = { timeoutMs: 15000, retries: 1 },
 ): Promise<ResultadoBruto[]> {
-  // O contrato desse endpoint mudou (sem versionamento): o parâmetro antigo
-  // `codigoItemCatalogo=<int>` foi substituído pelo par `tipo` (enum
-  // codigoItemCatalogo|codigoPdm) + `codigo` (string) — confirmado via
-  // documentação pública de terceiros que mantêm integrações com essa API
-  // (não há acesso de rede a .gov.br neste ambiente para confirmar
-  // diretamente). Com o parâmetro antigo, a API responde 404 — que o código
-  // abaixo trata como "sem preço registrado", mascarando a quebra de
-  // contrato como "nenhum histórico de compra" para todo item, sempre. Essa
-  // era a causa raiz de 0 preços encontrados mesmo para itens comuns.
-  const params = new URLSearchParams({
-    pagina: '1',
-    tamanhoPagina: String(tamanhoPagina),
-    tipo: 'codigoItemCatalogo',
-    codigo: String(codigoItemCatalogo),
-  });
-  if (uf) params.set('uf', uf);
-  const url = `${BASE}/1_consultarMaterial?${params.toString()}`;
-  const resp = await requisitar(url, opcoesRequisicao);
-  if (resp.status === 404) {
-    // Sem acesso de rede a .gov.br neste ambiente para confirmar o novo
-    // contrato ao vivo — se o 404 persistir mesmo com `tipo`+`codigo`,
-    // tenta uma vez com o parâmetro legado (`codigoItemCatalogo`) antes de
-    // concluir "sem preço registrado". Protege contra a correção acima
-    // estar errada ou a API reverter a mudança.
-    const paramsLegado = new URLSearchParams({
-      pagina: '1',
-      tamanhoPagina: String(tamanhoPagina),
-      codigoItemCatalogo: String(codigoItemCatalogo),
-    });
-    if (uf) paramsLegado.set('uf', uf);
-    const respLegado = await requisitar(`${BASE}/1_consultarMaterial?${paramsLegado.toString()}`, opcoesRequisicao);
-    // 404 em ambas as tentativas é como essa API sinaliza "nenhum preço
-    // registrado para este código de catálogo" — não uma falha de conexão.
-    if (respLegado.status === 404) return [];
-    if (!respLegado.ok) throw new Error(`Compras.gov.br respondeu HTTP ${respLegado.status}.`);
-    return extrairResultados(respLegado.corpoJson);
+  const params = new URLSearchParams({ pagina: '1', tamanhoPagina: String(tamanhoPagina) });
+  let caminho: string;
+  if (rota === 'MATERIAL') {
+    caminho = '1_consultarMaterial';
+    params.set('tipo', tipoCodigo);
+    params.set('codigo', String(codigo));
+  } else {
+    caminho = '3_consultarServico';
+    params.set('codigoItemCatalogo', String(codigo));
   }
+  if (estado) params.set('estado', estado);
+  const resp = await requisitar(`${BASE}/${caminho}?${params.toString()}`, OPCOES_REQUISICAO);
+  if (resp.status === 404) return [];
   if (!resp.ok) throw new Error(`Compras.gov.br respondeu HTTP ${resp.status}.`);
-  return extrairResultados(resp.corpoJson);
+  const corpo = resp.corpoJson as { resultado?: ResultadoBruto[] } | ResultadoBruto[] | null;
+  if (Array.isArray(corpo)) return corpo;
+  return corpo?.resultado ?? [];
 }
 
-function precoDe(r: ResultadoBruto): number | undefined {
-  return r.precoUnitario ?? r.valorUnitario;
+function dataDe(r: ResultadoBruto): string {
+  return (r.dataResultado ?? r.dataCompra ?? '').slice(0, 10);
 }
 
-function descricaoDe(r: ResultadoBruto): string {
-  return r.descricaoItem ?? r.descricao ?? '';
+function dentroDaJanela(r: ResultadoBruto): boolean {
+  const data = dataDe(r);
+  if (!data) return false;
+  const limite = Date.now() - JANELA_DIAS * 24 * 60 * 60 * 1000;
+  return new Date(data).getTime() >= limite;
 }
 
-const MAX_CANDIDATOS_TENTADOS = 5;
-/** Menor que MAX_CANDIDATOS_TENTADOS: usado só no caminho de cotação real
- * (buscarPrecos), onde o pior caso multiplica por N itens em paralelo — o
- * autoteste (testar()) mantém o valor mais generoso acima. */
-const MAX_CANDIDATOS_COTACAO = 3;
-/** Timeout/retries mais agressivos para o caminho de cotação: cada tentativa
- * é uma sondagem "esse código tem preço?", não uma checagem de conectividade
- * — não vale a pena pagar retry nem um timeout longo aqui. */
-const OPCOES_REQUISICAO_COTACAO = { timeoutMs: 6000, retries: 0 };
+function formatarData(iso: string): string {
+  const [a, m, d] = iso.split('-');
+  return a && m && d ? `${d}/${m}/${a}` : iso;
+}
 
-/** Monta os PontoPreco a partir dos resultados brutos de um código específico. */
-function montarPontos(resolvido: CodigoCatalogoResolvido, resultados: ResultadoBruto[], limite: number): PontoPreco[] {
-  const pontosPorFonte = new Map<string, PontoPreco>();
-  for (const r of resultados) {
-    if (pontosPorFonte.size >= limite) break;
-    const preco = precoDe(r);
-    if (!preco || preco <= 0) continue;
+/** Acumula preços de fontes distintas entre várias consultas. */
+class Coletor {
+  private pontos = new Map<string, PontoPreco>();
+  constructor(private readonly limite: number) {}
 
-    const data = (r.dataResultado ?? r.dataCompra ?? '').slice(0, 10);
-    const orgao = r.nomeOrgao ?? 'órgão não identificado';
-    const key = `${orgao}/${data}/${r.siglaUf ?? ''}`;
-    if (pontosPorFonte.has(key)) continue;
+  get cheio(): boolean { return this.pontos.size >= this.limite; }
+  get total(): number { return this.pontos.size; }
+  lista(): PontoPreco[] { return [...this.pontos.values()]; }
 
-    const notaFallback = resolvido.origem === 'CATMAT_COM_BR'
-      ? ' (código sugerido por fonte auxiliar não-oficial catmat.com.br; preço confirmado no Compras.gov.br oficial)'
-      : '';
-    pontosPorFonte.set(key, {
-      preco,
-      referencia: `Compras.gov.br — ${orgao}${data ? ` (${data})` : ''}, código de catálogo ${resolvido.codigo}${notaFallback}, consultado em ${new Date().toLocaleDateString('pt-BR')}`,
-      fundamentacaoArtigo: '',
-      dadosBrutos: {
-        codigoItemCatalogo: resolvido.codigo,
-        scoreResolucaoCodigo: resolvido.score,
-        origemCodigoResolucao: resolvido.origem,
-        descricaoCandidata: descricaoDe(r),
-      },
-    });
+  adicionar(rows: ResultadoBruto[], origem: string, filtro?: (r: ResultadoBruto) => number | null): number {
+    let adicionados = 0;
+    for (const r of rows) {
+      if (this.cheio) break;
+      const preco = Number(r.precoUnitario);
+      if (!Number.isFinite(preco) || preco <= 0 || !dentroDaJanela(r)) continue;
+      const scoreLinha = filtro ? filtro(r) : null;
+      if (filtro && scoreLinha === null) continue;
+
+      const data = dataDe(r);
+      const orgao = r.nomeOrgao ?? r.nomeUasg ?? 'órgão não identificado';
+      const chave = `${orgao}|${data}|${preco}`;
+      if (this.pontos.has(chave)) continue;
+
+      const unidade = r.siglaUnidadeFornecimento ?? r.nomeUnidadeFornecimento ?? r.siglaUnidadeMedida;
+      const local = [r.municipio, r.estado].filter(Boolean).join('/');
+      this.pontos.set(chave, {
+        preco,
+        referencia:
+          `Painel de Preços/Compras.gov.br — ${orgao}${local ? ` (${local})` : ''}, compra de ${formatarData(data)}, ` +
+          `CATMAT/CATSER ${r.codigoItemCatalogo ?? '?'}${unidade ? `, unidade ${unidade}` : ''}; ${origem}; ` +
+          `consultado em ${new Date().toLocaleDateString('pt-BR')}`,
+        fundamentacaoArtigo: '',
+        dadosBrutos: {
+          codigoItemCatalogo: r.codigoItemCatalogo,
+          descricaoItem: r.descricaoItem,
+          unidade,
+          idCompra: r.idCompra,
+          fornecedor: r.nomeFornecedor,
+          estado: r.estado,
+          dataCompra: data,
+          origem,
+          ...(scoreLinha !== null ? { scoreDescricao: scoreLinha } : {}),
+        },
+      });
+      adicionados++;
+    }
+    return adicionados;
   }
-  return [...pontosPorFonte.values()];
 }
 
-/**
- * Tenta os candidatos de código em ordem de score até um devolver preço de
- * verdade — o melhor match textual pode ser um código que nunca foi
- * comprado (sem histórico no Painel de Preços), enquanto um candidato
- * ligeiramente pior tem. Para no primeiro que retorna algo.
- */
-async function buscarPrecos(
-  item: ItemNormalizado,
-  limite: number,
-): Promise<{ pontos: PontoPreco[]; codigoResolvido: number | null; candidatosTentados: Array<{ codigo: number; score: number; descricaoCatalogo: string }> }> {
-  const candidatos = await resolverCandidatosCatalogoComFallback(item.descricaoNormalizada, 'MATERIAL');
-  if (candidatos.length === 0) return { pontos: [], codigoResolvido: null, candidatosTentados: [] };
+async function escolherCatalogo(descricao: string): Promise<{ rota: Rota; candidatos: CodigoCatalogoResolvido[] }> {
+  const [materiais, servicos] = await Promise.all([
+    resolverCandidatosCatalogoComFallback(descricao, 'MATERIAL'),
+    resolverCandidatosCatalogo(descricao, 'SERVICO'),
+  ]);
+  const melhorMaterial = materiais[0]?.score ?? 0;
+  const melhorServico = servicos[0]?.score ?? 0;
+  // Serviço só ganha com margem clara — descrições de material costumam
+  // ter alguma sobreposição com nomes de serviço ("manutenção de X").
+  if (servicos.length > 0 && melhorServico > melhorMaterial + 0.1) {
+    return { rota: 'SERVICO', candidatos: servicos };
+  }
+  return { rota: 'MATERIAL', candidatos: materiais };
+}
 
-  const tentados: Array<{ codigo: number; score: number; descricaoCatalogo: string }> = [];
-  for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_COTACAO)) {
-    tentados.push({ codigo: candidato.codigo, score: candidato.score, descricaoCatalogo: candidato.descricaoCatalogo });
-    const tamanhoPagina = Math.max(limite * 10, 50);
-    const resultadosRegionais = await buscarPorCodigo(candidato.codigo, item.uf, tamanhoPagina, OPCOES_REQUISICAO_COTACAO);
-    const pontosRegionais = montarPontos(candidato, resultadosRegionais, limite);
-    if (pontosRegionais.length > 0) return { pontos: pontosRegionais, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
+interface Busca {
+  pontos: PontoPreco[];
+  rota: Rota;
+  candidatos: CodigoCatalogoResolvido[];
+  passos: string[];
+}
 
-    // Sem preço na UF do item — cai para busca nacional (mesmo padrão já
-    // usado pelo PNCP: regional primeiro, nacional como fallback). Sem
-    // isso, um código com histórico de compra só fora do estado do item
-    // nunca aparecia, mesmo existindo preço de mercado real e comparável.
-    if (item.uf) {
-      const resultadosNacionais = await buscarPorCodigo(candidato.codigo, undefined, tamanhoPagina, OPCOES_REQUISICAO_COTACAO);
-      const pontosNacionais = montarPontos(candidato, resultadosNacionais, limite);
-      if (pontosNacionais.length > 0) return { pontos: pontosNacionais, codigoResolvido: candidato.codigo, candidatosTentados: tentados };
+async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busca> {
+  const { rota, candidatos } = await escolherCatalogo(item.descricaoNormalizada);
+  const passos: string[] = [];
+  const coletor = new Coletor(limite);
+  if (candidatos.length === 0) return { pontos: [], rota, candidatos, passos };
+
+  const estados = item.uf ? [item.uf, undefined] : [undefined];
+
+  for (const c of candidatos.slice(0, MAX_CANDIDATOS)) {
+    for (const estado of estados) {
+      if (coletor.cheio) break;
+      const rows = await consultarPrecos(rota, 'codigoItemCatalogo', c.codigo, estado, 50);
+      const n = coletor.adicionar(rows, `código exato${estado ? ` (${estado})` : ' (nacional)'}`);
+      passos.push(`código ${c.codigo}${estado ? `/${estado}` : '/BR'}: ${rows.length} compras, ${n} aproveitadas`);
+    }
+    if (coletor.cheio) break;
+  }
+
+  const pdm = rota === 'MATERIAL' ? candidatos.find((c) => c.pdm)?.pdm : undefined;
+  if (!coletor.cheio && pdm) {
+    const filtro = (r: ResultadoBruto): number | null => {
+      const s = pontuarCorrespondencia(item.descricaoNormalizada, r.descricaoItem ?? '');
+      return s >= LIMIAR_LINHA_PDM ? s : null;
+    };
+    for (const estado of estados) {
+      if (coletor.cheio) break;
+      const rows = await consultarPrecos('MATERIAL', 'codigoPdm', pdm, estado, 200);
+      // Linhas mais parecidas com o item primeiro, depois as mais recentes.
+      const ordenadas = rows
+        .map((r) => ({ r, s: pontuarCorrespondencia(item.descricaoNormalizada, r.descricaoItem ?? '') }))
+        .sort((a, b) => b.s - a.s)
+        .map((x) => x.r);
+      const n = coletor.adicionar(ordenadas, `família PDM ${pdm}${estado ? ` (${estado})` : ' (nacional)'}`, filtro);
+      passos.push(`PDM ${pdm}${estado ? `/${estado}` : '/BR'}: ${rows.length} compras, ${n} aproveitadas`);
     }
   }
 
-  // Nenhum candidato teve preço registrado — reporta o melhor código
-  // resolvido mesmo assim, para aparecer no log/diagnóstico.
-  return { pontos: [], codigoResolvido: candidatos[0].codigo, candidatosTentados: tentados };
+  return { pontos: coletor.lista(), rota, candidatos, passos };
 }
 
 export const comprasGovAdapter: FonteAdapter = {
@@ -193,21 +224,24 @@ export const comprasGovAdapter: FonteAdapter = {
   async consultar(item: ItemNormalizado, config: FonteCotacao): Promise<ResultadoConsultaFonte> {
     const limite = Math.max(config.limiteResultados > 0 ? config.limiteResultados : 3, 3);
     try {
-      const { pontos, codigoResolvido, candidatosTentados } = await buscarPrecos(item, limite);
-      if (codigoResolvido === null) {
-        logger.info('Compras.gov.br: nenhum código de catálogo resolvido com confiança para o item — pulando fonte.');
+      const { pontos, rota, candidatos, passos } = await buscarPrecos(item, limite);
+      if (candidatos.length === 0) {
         const bruto = await melhorCandidatoBruto(item.descricaoNormalizada, 'MATERIAL').catch(() => null);
-        const detalheBruto = bruto
-          ? ` Mais próximo (abaixo do limiar 0.35): código ${bruto.codigo} (score ${bruto.score.toFixed(2)}: "${bruto.descricaoCatalogo.slice(0, 60)}").`
-          : ' Nenhum item no catálogo local sequer se aproximou.';
-        return { pontos: [], diagnostico: `Compras.gov.br: nenhum código de catálogo local passou no limiar de confiança.${detalheBruto}` };
+        const detalhe = bruto
+          ? ` Mais próximo: código ${bruto.codigo} (score ${bruto.score.toFixed(2)}: "${bruto.descricaoCatalogo.slice(0, 60)}").`
+          : ' Catálogo local vazio ou sem nada parecido — confira a importação do CATMAT/CATSER em Fontes.';
+        return { pontos: [], diagnostico: `Compras.gov.br: descrição não corresponde a nenhum item do catálogo oficial.${detalhe}` };
       }
-      logger.info(`Compras.gov.br: ${pontos.length} preço(s) de fontes distintas (código ${codigoResolvido})`);
-      const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
+      logger.info(`Compras.gov.br: ${pontos.length} preço(s) (${rota}) — ${passos.join('; ')}`);
       if (pontos.length === 0) {
-        const lista = candidatosTentados.map((c) => `${c.codigo} (score ${c.score.toFixed(2)}: "${c.descricaoCatalogo.slice(0, 60)}")`).join('; ');
-        return { pontos: [], diagnostico: `Compras.gov.br: código(s) resolvido(s) [${lista}] mas nenhum tem preço registrado no Painel de Preços.` };
+        const lista = candidatos.slice(0, MAX_CANDIDATOS)
+          .map((c) => `${c.codigo} "${c.descricaoCatalogo.slice(0, 50)}" (score ${c.score.toFixed(2)})`).join('; ');
+        return {
+          pontos: [],
+          diagnostico: `Compras.gov.br (${rota === 'MATERIAL' ? 'CATMAT' : 'CATSER'}): candidatos [${lista}] sem compra nos últimos 12 meses — ${passos.join('; ')}.`,
+        };
       }
+      const fundamentacaoArtigo = config.fundamentacaoArtigo ?? '';
       return { pontos: pontos.map((p) => ({ ...p, fundamentacaoArtigo })) };
     } catch (e) {
       logger.error('Compras.gov.br: fonte indisponível', e);
@@ -218,49 +252,38 @@ export const comprasGovAdapter: FonteAdapter = {
   async testar(_config: FonteCotacao, itemAmostra: string): Promise<TesteResultado> {
     const inicio = Date.now();
     try {
-      const candidatos = await resolverCandidatosCatalogo(itemAmostra, 'MATERIAL');
+      const item: ItemNormalizado = {
+        nome: itemAmostra,
+        descricao: itemAmostra,
+        descricaoNormalizada: itemAmostra,
+        cascata: [itemAmostra],
+        quantidade: 1,
+        unidadeMedida: 'UN',
+      };
+      const { pontos, candidatos, passos } = await buscarPrecos(item, 3);
+      const latenciaMs = Date.now() - inicio;
       if (candidatos.length === 0) {
         return {
-          ok: false,
-          latenciaMs: Date.now() - inicio,
-          amostraPreco: null,
-          amostraReferencia: null,
-          mensagem: `Não foi possível resolver "${itemAmostra}" para um código de catálogo. Confira se o catálogo oficial já foi sincronizado (ver Fontes).`,
+          ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null,
+          mensagem: `Não foi possível resolver "${itemAmostra}" para um código de catálogo. Confira se o catálogo oficial CATMAT/CATSER já foi importado.`,
           dadosBrutos: null,
         };
       }
-
-      let resultados: ResultadoBruto[] = [];
-      let usado = candidatos[0];
-      let tentativas = 0;
-      for (const candidato of candidatos.slice(0, MAX_CANDIDATOS_TENTADOS)) {
-        tentativas++;
-        resultados = await buscarPorCodigo(candidato.codigo, undefined, 10);
-        usado = candidato;
-        if (resultados.length > 0) break;
-      }
-
-      const latenciaMs = Date.now() - inicio;
-      const amostra = resultados.find((r) => precoDe(r) && precoDe(r)! > 0);
+      const amostra = pontos[0];
       return {
         ok: true,
         latenciaMs,
-        amostraPreco: amostra ? precoDe(amostra)! : null,
-        amostraReferencia: amostra ? descricaoDe(amostra) : `código ${usado.codigo} — ${usado.descricaoCatalogo}`,
-        mensagem: resultados.length > 0
-          ? `Compras.gov.br acessível — ${resultados.length} resultado(s) para código ${usado.codigo} ("${usado.descricaoCatalogo}") em ${latenciaMs}ms (${tentativas} candidato(s) testado(s)).`
-          : `Compras.gov.br acessível, mas nenhum dos ${tentativas} candidato(s) de código para "${itemAmostra}" tem preço registrado no Painel de Preços.`,
-        dadosBrutos: { codigoItemCatalogo: usado.codigo, totalResultados: resultados.length, candidatosTentados: tentativas },
+        amostraPreco: amostra?.preco ?? null,
+        amostraReferencia: amostra?.referencia ?? `código ${candidatos[0].codigo} — ${candidatos[0].descricaoCatalogo}`,
+        mensagem: pontos.length > 0
+          ? `Compras.gov.br acessível — ${pontos.length} preço(s) para "${itemAmostra}" em ${latenciaMs}ms.`
+          : `Compras.gov.br acessível, mas sem compras nos últimos 12 meses para "${itemAmostra}" (${passos.join('; ')}).`,
+        dadosBrutos: { candidatos: candidatos.slice(0, MAX_CANDIDATOS).map((c) => c.codigo), passos },
       };
     } catch (e) {
       return {
-        ok: false,
-        latenciaMs: Date.now() - inicio,
-        amostraPreco: null,
-        amostraReferencia: null,
-        mensagem: e instanceof Error
-          ? `Falha: ${e.message} — confira o endpoint atual em dadosabertos.compras.gov.br antes de tentar novamente.`
-          : 'Falha de conexão.',
+        ok: false, latenciaMs: Date.now() - inicio, amostraPreco: null, amostraReferencia: null,
+        mensagem: e instanceof Error ? `Falha: ${e.message}` : 'Falha de conexão.',
         dadosBrutos: null,
       };
     }

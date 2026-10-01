@@ -33,6 +33,9 @@ export interface CodigoCatalogoResolvido {
   descricaoCatalogo: string;
   score: number;
   origem: 'LOCAL' | 'CATMAT_COM_BR';
+  /** Código PDM (família do produto) — permite buscar preço de variantes
+   * do mesmo item quando o código exato nunca foi comprado. */
+  pdm: string | null;
 }
 
 /**
@@ -56,8 +59,8 @@ export async function resolverCandidatosCatalogo(
   // — só o operador `<->` contra um índice GiST (gist_trgm_ops) permite
   // que o Postgres use o índice para essa ordenação (KNN); a função
   // similarity() direta força Seq Scan na tabela inteira a cada chamada.
-  const candidatos = await prisma.$queryRawUnsafe<Array<{ codigo: number; descricao: string }>>(
-    `SELECT codigo, descricao FROM "CatalogoOficialItem"
+  const candidatos = await prisma.$queryRawUnsafe<Array<{ codigo: number; descricao: string; pdm: string | null }>>(
+    `SELECT codigo, descricao, pdm FROM "CatalogoOficialItem"
      WHERE tipo = $1::"TipoCatalogoOficial" AND ativo = true
      ORDER BY descricao <-> $2
      LIMIT $3`,
@@ -73,6 +76,7 @@ export async function resolverCandidatosCatalogo(
       descricaoCatalogo: c.descricao,
       score: pontuarCorrespondencia(busca, c.descricao),
       origem: 'LOCAL' as const,
+      pdm: c.pdm,
     }))
     .filter((c) => c.score >= LIMIAR_FINAL)
     .sort((a, b) => b.score - a.score);
@@ -139,5 +143,6 @@ export async function resolverCandidatosCatalogoComFallback(
     // confundido com uma confiança real de correspondência textual.
     score: -1,
     origem: 'CATMAT_COM_BR',
+    pdm: null,
   }];
 }
