@@ -17,7 +17,7 @@ vi.mock('../../catalogo/catalogoMatch.service.js', () => ({
 const { comprasGovAdapter } = await import('../comprasGov.adapter.js');
 
 const hoje = new Date().toISOString().slice(0, 10);
-const linha = (orgao: string, preco: number, descricaoItem: string, data = hoje) => ({
+const linha = (orgao: string, preco: number, descricaoItem: string, data = hoje, extra: Record<string, unknown> = {}) => ({
   codigoItemCatalogo: 443990,
   precoUnitario: preco,
   descricaoItem,
@@ -25,6 +25,7 @@ const linha = (orgao: string, preco: number, descricaoItem: string, data = hoje)
   estado: 'MG',
   dataResultado: data,
   siglaUnidadeFornecimento: 'UN',
+  ...extra,
 });
 const ok = (resultado: unknown[]) => ({ ok: true, status: 200, corpoJson: { resultado, totalRegistros: resultado.length }, corpoTexto: '', latenciaMs: 1 });
 
@@ -40,6 +41,7 @@ const item: ItemNormalizado = {
 const config = { limiteResultados: 3, fundamentacaoArtigo: 'IN 65/2021, art. 5º, I' } as unknown as FonteCotacao;
 
 const candidato = { codigo: 443990, tipo: 'MATERIAL', descricaoCatalogo: 'CANETA ESFEROGRÁFICA, COR AZUL', score: 0.8, origem: 'LOCAL', pdm: '5080' };
+const candidatoErrado = { ...candidato, codigo: 150583, descricaoCatalogo: 'REMOVEDOR, NOME: REMOVEDOR', pdm: '11634' };
 
 beforeEach(() => {
   requisitar.mockReset();
@@ -61,9 +63,25 @@ describe('comprasGovAdapter.consultar', () => {
     expect(url).toContain('1_consultarMaterial');
     expect(url).toContain('tipo=codigoItemCatalogo');
     expect(url).toContain('codigo=443990');
-    expect(url).toContain('estado=MG');
     expect(url).not.toContain('codigoItemCatalogo=443990');
     expect(r.pontos[0].fundamentacaoArtigo).toBe('IN 65/2021, art. 5º, I');
+  });
+
+  it('agrupa por unidade (a do item quando existe) e prefere a UF do item', async () => {
+    requisitar.mockResolvedValue(ok([
+      linha('Órgão SP', 2.0, 'CANETA ESFEROGRÁFICA AZUL', hoje, { estado: 'SP' }),
+      linha('Órgão CX1', 40, 'CANETA ESFEROGRÁFICA AZUL', hoje, { siglaUnidadeFornecimento: 'CX' }),
+      linha('Órgão CX2', 45, 'CANETA ESFEROGRÁFICA AZUL', hoje, { siglaUnidadeFornecimento: 'CX' }),
+      linha('Órgão CX3', 42, 'CANETA ESFEROGRÁFICA AZUL', hoje, { siglaUnidadeFornecimento: 'CX' }),
+      linha('Órgão MG1', 2.5, 'CANETA ESFEROGRÁFICA AZUL'),
+      linha('Órgão MG2', 2.7, 'CANETA ESFEROGRÁFICA AZUL'),
+      linha('Órgão MG3', 2.9, 'CANETA ESFEROGRÁFICA AZUL'),
+    ]));
+    const r = await comprasGovAdapter.consultar(item, config);
+    expect(r.pontos.map((p) => p.preco)).toEqual([2.5, 2.7, 2.9]);
+
+    const porCaixa = await comprasGovAdapter.consultar({ ...item, unidadeMedida: 'Caixa' }, config);
+    expect(porCaixa.pontos.map((p) => p.preco).sort()).toEqual([40, 42, 45]);
   });
 
   it('descarta compras com mais de 12 meses', async () => {
@@ -90,12 +108,23 @@ describe('comprasGovAdapter.consultar', () => {
 
   it('usa a rota de serviço quando o catálogo de serviços corresponde melhor', async () => {
     materiais.mockResolvedValue([]);
-    servicos.mockResolvedValue([{ ...candidato, codigo: 24325, tipo: 'SERVICO', pdm: null }]);
+    servicos.mockResolvedValue([{ ...candidato, codigo: 24325, tipo: 'SERVICO', descricaoCatalogo: 'PRESTACAO DE SERVICO DE JARDINAGEM', pdm: null }]);
     requisitar.mockResolvedValue(ok([linha('TRE/MG', 200, 'SERVIÇO DE JARDINAGEM')]));
-    const r = await comprasGovAdapter.consultar({ ...item, descricaoNormalizada: 'servico de jardinagem' }, config);
+    const r = await comprasGovAdapter.consultar({ ...item, nome: 'Serviço de jardinagem', descricao: 'Serviço de jardinagem' }, config);
     expect(r.pontos).toHaveLength(1);
     expect(requisitar.mock.calls[0][0]).toContain('3_consultarServico?');
     expect(requisitar.mock.calls[0][0]).toContain('codigoItemCatalogo=24325');
+  });
+
+  it('não aceita candidato que não contém o objeto do item (acetona ≠ removedor genérico)', async () => {
+    materiais.mockResolvedValue([candidatoErrado]);
+    requisitar.mockResolvedValue(ok([linha('Órgão', 31.86, 'REMOVEDOR, TIPO: ANTI-RESPINGO PARA SOLDA')]));
+    const r = await comprasGovAdapter.consultar(
+      { ...item, nome: 'Acetona removedor de esmaltes 500ml', descricao: 'Acetona removedor de esmaltes 500ml' },
+      config,
+    );
+    expect(r.pontos).toHaveLength(0);
+    expect(requisitar).not.toHaveBeenCalled();
   });
 
   it('reporta erro (não "sem preço") quando a API falha', async () => {

@@ -21,7 +21,7 @@ import { resolverItemNoCatalogo } from './resolucaoCatalogo.js';
  */
 
 const URL_ARP_ITEM = 'https://dadosabertos.compras.gov.br/modulo-arp/2_consultarARPItem';
-const MAX_CANDIDATOS = 3;
+const MAX_CANDIDATOS = 6;
 const JANELA_DIAS = 365;
 const OPCOES_REQUISICAO = { timeoutMs: 15000, retries: 1 };
 
@@ -76,9 +76,10 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<{ po
   const pontos = new Map<string, PontoPreco>();
   const passos: string[] = [];
 
-  for (const c of candidatos.slice(0, MAX_CANDIDATOS)) {
-    if (pontos.size >= limite) break;
-    const linhas = await consultarAtas(c.codigo);
+  const consultas = await Promise.all(
+    candidatos.slice(0, MAX_CANDIDATOS).map(async (c) => ({ c, linhas: await consultarAtas(c.codigo) })),
+  );
+  for (const { c, linhas } of consultas) {
     let aproveitadas = 0;
     // Mais recentes primeiro.
     linhas.sort((a, b) => (b.dataAssinatura ?? '').localeCompare(a.dataAssinatura ?? ''));

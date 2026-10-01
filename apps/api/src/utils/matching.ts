@@ -42,6 +42,11 @@ function tokenizar(texto: string): string[] {
     .map(singularizar);
 }
 
+/** Tokens significativos, sem acento/stopwords e no singular. */
+export function tokensSignificativos(texto: string): string[] {
+  return tokenizar(texto);
+}
+
 /**
  * Score em [0, 1]: proporção dos tokens da busca presentes na descrição
  * candidata, com peso maior para tokens mais longos (mais específicos).

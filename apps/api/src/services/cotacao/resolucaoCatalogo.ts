@@ -5,6 +5,7 @@ import {
   type CodigoCatalogoResolvido,
 } from '../catalogo/catalogoMatch.service.js';
 import { textosParaCatalogo } from './normalizacao.service.js';
+import { tokensSignificativos } from '../../utils/matching.js';
 
 export type TipoCatalogo = 'MATERIAL' | 'SERVICO';
 
@@ -16,11 +17,30 @@ export interface ItemResolvido {
   texto: string;
 }
 
+/**
+ * Em descrições de compra o primeiro termo é o objeto ("acetona ...",
+ * "caneta ...", "serviço de ..."), e o catálogo oficial também começa pelo
+ * nome do item. Exigir esse termo no candidato evita o falso positivo mais
+ * perigoso visto com dado real: "acetona removedor de esmaltes" casando com
+ * "REMOVEDOR" genérico (removedor de solda) só por compartilhar "removedor".
+ * Sem candidato com o núcleo, o item fica sem preço — melhor que preço de
+ * outro produto.
+ */
+export function contemNucleo(textoItem: string, descricaoCandidata: string): boolean {
+  const nucleo = tokensSignificativos(textoItem)[0];
+  if (!nucleo) return true;
+  return tokensSignificativos(descricaoCandidata).includes(nucleo);
+}
+
 async function escolherCatalogo(descricao: string): Promise<{ rota: TipoCatalogo; candidatos: CodigoCatalogoResolvido[] }> {
-  const [materiais, servicos] = await Promise.all([
+  const [todosMateriais, todosServicos] = await Promise.all([
     resolverCandidatosCatalogoComFallback(descricao, 'MATERIAL'),
     resolverCandidatosCatalogo(descricao, 'SERVICO'),
   ]);
+  // O fallback externo (catmat.com.br, score -1) já é uma sugestão por
+  // nome de produto; não passa pelo filtro de núcleo.
+  const materiais = todosMateriais.filter((c) => c.origem !== 'LOCAL' || contemNucleo(descricao, c.descricaoCatalogo));
+  const servicos = todosServicos.filter((c) => contemNucleo(descricao, c.descricaoCatalogo));
   const melhorMaterial = materiais[0]?.score ?? 0;
   const melhorServico = servicos[0]?.score ?? 0;
   // Serviço só ganha com margem clara — descrições de material costumam
