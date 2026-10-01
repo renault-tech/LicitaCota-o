@@ -1,0 +1,36 @@
+name: e2e-fontes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: licitapreco
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/licitapreco
+      JWT_SECRET: e2e
+      JWT_REFRESH_SECRET: e2e
+      NODE_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - run: pnpm -F @licitapreco/shared build
+      - working-directory: apps/api
+        run: |
+          pnpm exec prisma generate --schema=src/prisma/schema.prisma
+          pnpm exec prisma db push --schema=src/prisma/schema.prisma --skip-generate --accept-data-loss
+      - working-directory: apps/api
+        run: pnpm exec tsx src/scripts/e2e-fontes.ts
