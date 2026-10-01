@@ -3,13 +3,10 @@ import type { ItemNormalizado, PontoPreco, ResultadoConsultaFonte, TesteResultad
 import { requisitar } from '../../utils/http.js';
 import { logger } from '../../utils/logger.js';
 import { pontuarCorrespondencia } from '../../utils/matching.js';
-import {
-  resolverCandidatosCatalogo,
-  resolverCandidatosCatalogoComFallback,
-  melhorCandidatoBruto,
-  type CodigoCatalogoResolvido,
-} from '../catalogo/catalogoMatch.service.js';
+import { melhorCandidatoBruto, type CodigoCatalogoResolvido } from '../catalogo/catalogoMatch.service.js';
 import type { FonteAdapter } from './adapter.js';
+import { textosParaCatalogo } from './normalizacao.service.js';
+import { resolverItemNoCatalogo } from './resolucaoCatalogo.js';
 
 /**
  * Adapter do Compras.gov.br — "Módulo Pesquisa de Preço" (Painel de Preços)
@@ -156,21 +153,6 @@ class Coletor {
   }
 }
 
-async function escolherCatalogo(descricao: string): Promise<{ rota: Rota; candidatos: CodigoCatalogoResolvido[] }> {
-  const [materiais, servicos] = await Promise.all([
-    resolverCandidatosCatalogoComFallback(descricao, 'MATERIAL'),
-    resolverCandidatosCatalogo(descricao, 'SERVICO'),
-  ]);
-  const melhorMaterial = materiais[0]?.score ?? 0;
-  const melhorServico = servicos[0]?.score ?? 0;
-  // Serviço só ganha com margem clara — descrições de material costumam
-  // ter alguma sobreposição com nomes de serviço ("manutenção de X").
-  if (servicos.length > 0 && melhorServico > melhorMaterial + 0.1) {
-    return { rota: 'SERVICO', candidatos: servicos };
-  }
-  return { rota: 'MATERIAL', candidatos: materiais };
-}
-
 interface Busca {
   pontos: PontoPreco[];
   rota: Rota;
@@ -179,7 +161,7 @@ interface Busca {
 }
 
 async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busca> {
-  const { rota, candidatos } = await escolherCatalogo(item.descricaoNormalizada);
+  const { rota, candidatos, texto } = await resolverItemNoCatalogo(item);
   const passos: string[] = [];
   const coletor = new Coletor(limite);
   if (candidatos.length === 0) return { pontos: [], rota, candidatos, passos };
@@ -199,7 +181,7 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busc
   const pdm = rota === 'MATERIAL' ? candidatos.find((c) => c.pdm)?.pdm : undefined;
   if (!coletor.cheio && pdm) {
     const filtro = (r: ResultadoBruto): number | null => {
-      const s = pontuarCorrespondencia(item.descricaoNormalizada, r.descricaoItem ?? '');
+      const s = pontuarCorrespondencia(texto, r.descricaoItem ?? '');
       return s >= LIMIAR_LINHA_PDM ? s : null;
     };
     for (const estado of estados) {
@@ -207,7 +189,7 @@ async function buscarPrecos(item: ItemNormalizado, limite: number): Promise<Busc
       const rows = await consultarPrecos('MATERIAL', 'codigoPdm', pdm, estado, 200);
       // Linhas mais parecidas com o item primeiro, depois as mais recentes.
       const ordenadas = rows
-        .map((r) => ({ r, s: pontuarCorrespondencia(item.descricaoNormalizada, r.descricaoItem ?? '') }))
+        .map((r) => ({ r, s: pontuarCorrespondencia(texto, r.descricaoItem ?? '') }))
         .sort((a, b) => b.s - a.s)
         .map((x) => x.r);
       const n = coletor.adicionar(ordenadas, `família PDM ${pdm}${estado ? ` (${estado})` : ' (nacional)'}`, filtro);
@@ -226,7 +208,7 @@ export const comprasGovAdapter: FonteAdapter = {
     try {
       const { pontos, rota, candidatos, passos } = await buscarPrecos(item, limite);
       if (candidatos.length === 0) {
-        const bruto = await melhorCandidatoBruto(item.descricaoNormalizada, 'MATERIAL').catch(() => null);
+        const bruto = await melhorCandidatoBruto(textosParaCatalogo(item.nome, item.descricao)[0] ?? item.descricaoNormalizada, 'MATERIAL').catch(() => null);
         const detalhe = bruto
           ? ` Mais próximo: código ${bruto.codigo} (score ${bruto.score.toFixed(2)}: "${bruto.descricaoCatalogo.slice(0, 60)}").`
           : ' Catálogo local vazio ou sem nada parecido — confira a importação do CATMAT/CATSER em Fontes.';
@@ -263,9 +245,15 @@ export const comprasGovAdapter: FonteAdapter = {
       const { pontos, candidatos, passos } = await buscarPrecos(item, 3);
       const latenciaMs = Date.now() - inicio;
       if (candidatos.length === 0) {
+        // Testa a conectividade mesmo sem catálogo local (código que
+        // sabidamente tem compras), para não desativar a fonte por um
+        // problema que é da importação do catálogo, não da API.
+        const linhas = await consultarPrecos('MATERIAL', 'codigoItemCatalogo', 443990, undefined, 5);
         return {
-          ok: false, latenciaMs, amostraPreco: null, amostraReferencia: null,
-          mensagem: `Não foi possível resolver "${itemAmostra}" para um código de catálogo. Confira se o catálogo oficial CATMAT/CATSER já foi importado.`,
+          ok: true, latenciaMs: Date.now() - inicio,
+          amostraPreco: linhas[0]?.precoUnitario ?? null,
+          amostraReferencia: linhas[0]?.descricaoItem ?? null,
+          mensagem: `Compras.gov.br acessível (${linhas.length} compras de teste), mas "${itemAmostra}" não foi encontrado no catálogo local — importe o CATMAT/CATSER em Fontes.`,
           dadosBrutos: null,
         };
       }

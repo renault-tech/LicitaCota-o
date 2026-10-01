@@ -151,10 +151,16 @@ function montarJanelas(uf: string | undefined): Janela[] {
   return janelas;
 }
 
+/** Esta API não filtra por item: a varredura de contratações é uma amostra
+ * e não pode segurar a pesquisa inteira — as fontes por código (Painel de
+ * Preços, Atas) rodam em paralelo e são as principais. */
+const ORCAMENTO_MS = 25000;
+
 async function buscarPrecos(
   item: ItemNormalizado,
   limite: number,
 ): Promise<{ pontos: PontoPreco[]; contratacoesTentadas: number; itensAvaliados: number; melhorScoreVisto: number }> {
+  const prazo = Date.now() + ORCAMENTO_MS;
   const janelas = montarJanelas(item.uf);
   const pontosPorFonte = new Map<string, PontoPreco>();
   let contratacoesTentadas = 0;
@@ -164,12 +170,12 @@ async function buscarPrecos(
   let ultimoErro: unknown;
 
   for (const janela of janelas) {
-    if (pontosPorFonte.size >= limite) break;
+    if (pontosPorFonte.size >= limite || Date.now() > prazo) break;
 
     const contratos: Contratacao[] = [];
     let algumaModalidadeFuncionou = false;
     for (const modalidade of MODALIDADES_COMUNS) {
-      if (pontosPorFonte.size >= limite) break;
+      if (pontosPorFonte.size >= limite || Date.now() > prazo) break;
       try {
         contratos.push(...(await buscarContratacoes(janela.ini, janela.fim, janela.uf, modalidade, 40)));
         algumaJanelaFuncionou = true;
@@ -188,7 +194,8 @@ async function buscarPrecos(
       return !pontosPorFonte.has(key);
     });
 
-    const itensPorContrato = await mapComConcorrencia(pendentes, 5, async (ct) => {
+    const itensPorContrato = await mapComConcorrencia(pendentes, 8, async (ct) => {
+      if (Date.now() > prazo) return { ct, itens: [] as ContratacaoItem[] };
       const itens = await buscarItensContrato(ct.orgaoEntidade!.cnpj!, ct.anoCompra!, ct.sequencialCompra!);
       return { ct, itens };
     });

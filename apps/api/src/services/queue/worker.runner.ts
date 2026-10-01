@@ -10,6 +10,7 @@ import { notificar } from '../notificacao.service.js';
 import { registrarAuditoria } from '../auditoria.service.js';
 import { progressStore } from './progressStore.js';
 import { sincronizarCatalogo, catalogoEstaVazio, garantirIndiceTrigram } from '../catalogo/catalogoSync.service.js';
+import { autoValidarFontes } from '../cotacao/fonte.service.js';
 // PesquisaJobData definida localmente para evitar importação circular com pesquisa.queue.ts
 interface PesquisaJobData { pesquisaId: string; autorId: string; }
 
@@ -298,6 +299,14 @@ async function manterCatalogoAtualizado(): Promise<void> {
 }
 
 setImmediate(() => { manterCatalogoAtualizado().catch(() => {}); });
+
+const SEIS_HORAS_MS = 6 * 60 * 60 * 1000;
+setTimeout(() => {
+  autoValidarFontes().catch((e: unknown) => logger.error('Falha na auto-validação das fontes', e));
+}, 15_000);
+setInterval(() => {
+  autoValidarFontes().catch((e: unknown) => logger.error('Falha na auto-validação das fontes', e));
+}, SEIS_HORAS_MS);
 
 setInterval(() => {
   prisma.catalogoOficialItem

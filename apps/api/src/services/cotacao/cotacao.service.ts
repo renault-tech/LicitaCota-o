@@ -32,10 +32,6 @@ export interface ResultadoItem {
   houveErroFonte: boolean;
 }
 
-function dormir(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 export async function cotarItem(
   itemId: string,
   itemNormalizado: ItemNormalizado,
@@ -86,10 +82,23 @@ export async function cotarItem(
     }
   }
 
-  for (const fonte of fontes) {
-    const adapter = adapterPara(fonte.tipo, fonte.slug);
+  // As fontes são independentes entre si: consulta todas em paralelo (o
+  // tempo do item passa a ser o da fonte mais lenta, não a soma de todas)
+  // e só depois grava os resultados, na ordem configurada.
+  const consultas = await Promise.all(
+    fontes.map(async (fonte) => {
+      try {
+        const adapter = adapterPara(fonte.tipo, fonte.slug);
+        return { fonte, resultado: await adapter.consultar(itemNormalizado, fonte), falha: null as unknown };
+      } catch (e) {
+        return { fonte, resultado: null, falha: e };
+      }
+    }),
+  );
+
+  for (const { fonte, resultado, falha } of consultas) {
     try {
-      const resultado = await adapter.consultar(itemNormalizado, fonte);
+      if (!resultado) throw falha;
 
       if (resultado.erro) {
         // Fonte indisponível (rede/HTTP) — distinto de "consultou e não achou
@@ -160,7 +169,6 @@ export async function cotarItem(
         },
       });
     }
-    if (fonte.pausaMs > 0) await dormir(fonte.pausaMs);
   }
 
   // Inclui cotações diretas já respondidas (não outliers) no cálculo.

@@ -3,6 +3,7 @@ import type { TesteResultado } from '@licitapreco/shared';
 import { prisma } from '../../config/prisma.js';
 import { ConflitoError, NaoEncontradoError } from '../../utils/errors.js';
 import { registrarAuditoria } from '../auditoria.service.js';
+import { logger } from '../../utils/logger.js';
 import { adapterPara } from './fonteRegistry.js';
 
 /**
@@ -121,4 +122,40 @@ export async function revalidarFontesAtivas(): Promise<
     resultados.push({ id: fonte.id, nome: fonte.nome, ok: r.ok, mensagem: r.mensagem });
   }
   return resultados;
+}
+
+/**
+ * Validação automática (boot e a cada 6h): sem isso, uma fonte que falhou
+ * uma única vez (ex.: instabilidade momentânea do governo) ficava desativada
+ * para sempre até alguém clicar em "Testar". Fontes nunca testadas ou
+ * inválidas que passam no teste real entram no fluxo; ativas que falham
+ * saem (e voltam sozinhas no próximo ciclo se a API se recuperar). Uma
+ * fonte VÁLIDA desativada manualmente não é tocada — foi escolha do usuário.
+ */
+export async function autoValidarFontes(): Promise<void> {
+  const fontes = await prisma.fonteCotacao.findMany({
+    where: { OR: [{ ativo: true }, { statusValidacao: { not: 'VALIDA' } }] },
+  });
+  if (fontes.length === 0) return;
+  const amostra = await itemAmostra();
+  for (const fonte of fontes) {
+    try {
+      const r = await adapterPara(fonte.tipo, fonte.slug).testar(fonte, amostra);
+      await prisma.fonteCotacao.update({
+        where: { id: fonte.id },
+        data: {
+          statusValidacao: r.ok ? 'VALIDA' : 'INVALIDA',
+          ativo: r.ok,
+          ultimoTesteEm: new Date(),
+          ultimoTesteResultado: {
+            ok: r.ok, latenciaMs: r.latenciaMs, mensagem: r.mensagem,
+            amostraPreco: r.amostraPreco, amostraReferencia: r.amostraReferencia,
+          },
+        },
+      });
+      logger.info(`Auto-validação da fonte ${fonte.slug}: ${r.ok ? 'OK' : 'FALHOU'} — ${r.mensagem}`);
+    } catch (e) {
+      logger.error(`Auto-validação da fonte ${fonte.slug} falhou`, e);
+    }
+  }
 }

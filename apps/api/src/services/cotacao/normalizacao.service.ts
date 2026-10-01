@@ -152,6 +152,31 @@ export function normalizarDescricao(
   return { descricaoNormalizada: comDicionario, cascata };
 }
 
+const EMBALAGEM = /\b(caixa|cx|pacote|pct|embalagem|emb|fardo|frasco|kit|rolo|resma|c)\s*(c\/|com|c)?\s*\d+\s*(unidades|unidade|unid|und|un|pecas|pcs|folhas|fls)?\b/g;
+
+/**
+ * Textos para casar a descrição com o catálogo oficial, do mais completo ao
+ * núcleo. Diferente de `descricaoNormalizada`: sem as expansões do dicionário
+ * nem de abreviações (o catálogo usa "ML", "UN"; termos acrescentados que não
+ * estão no catálogo só derrubam o score) e sem dados de embalagem ("caixa
+ * c/ 50 unidades"), que o catálogo não descreve e pesam como números.
+ */
+export function textosParaCatalogo(nome: string, descricao: string): string[] {
+  const limpo = limpar(`${nome} ${descricao}`.replace(/c\/\s*/gi, 'com '))
+    .replace(EMBALAGEM, ' ')
+    .replace(/(\d)([a-z])/g, '$1 $2')
+    .replace(/[.,]/g, ' ');
+  const vistos = new Set<string>();
+  const tokens = limpo.split(/\s+/).filter((t) => {
+    if (!t || vistos.has(t)) return false;
+    vistos.add(t);
+    return true;
+  });
+  const significativos = tokens.filter((t) => !STOPWORDS.has(t));
+  const textos = [tokens.join(' '), significativos.slice(0, 3).join(' '), significativos.slice(0, 2).join(' ')];
+  return [...new Set(textos.filter((t) => t.split(' ').length >= 1 && t.length > 2))];
+}
+
 /** Carrega o dicionário ativo do banco. */
 export async function carregarDicionario(): Promise<EntradaDicionario[]> {
   const entradas = await prisma.dicionarioSinonimo.findMany({ where: { ativo: true } });
