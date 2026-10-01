@@ -1,0 +1,50 @@
+name: diag-fontes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compras.gov.br preco (contratos novo e legado)
+        run: |
+          B=https://dadosabertos.compras.gov.br
+          for q in \
+            "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoItemCatalogo&codigo=443990" \
+            "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&codigoItemCatalogo=443990" \
+            "modulo-pesquisa-preco/1_consultarMaterial?pagina=1&tamanhoPagina=10&tipo=codigoItemCatalogo&codigo=443990&uf=MG" \
+            "modulo-material/4_consultarItemMaterial?pagina=1&tamanhoPagina=5&descricaoItem=caneta" \
+            "modulo-material/4_consultarItemMaterial?pagina=1&tamanhoPagina=5&codigoItem=443990" ; do
+            echo "=================== $q"
+            curl -sS -m 40 -w '\nHTTP %{http_code} em %{time_total}s\n' "$B/$q" | head -c 2500
+            echo
+          done
+      - name: Swagger do modulo pesquisa preco
+        run: |
+          curl -sS -m 40 https://dadosabertos.compras.gov.br/v3/api-docs -o docs.json -w 'HTTP %{http_code}\n' || true
+          ls -la docs.json || true
+          python3 - <<'EOF'
+          import json
+          try:
+              d = json.load(open('docs.json'))
+          except Exception as e:
+              print('sem swagger', e); raise SystemExit
+          for p, ops in d.get('paths', {}).items():
+              if 'pesquisa-preco' in p or 'consultarItemMaterial' in p:
+                  for m, op in ops.items():
+                      params = [(x.get('name'), x.get('required')) for x in op.get('parameters', [])]
+                      print(m.upper(), p, params)
+          EOF
+      - name: PNCP
+        run: |
+          D1=$(date -d '-30 days' +%Y%m%d); D2=$(date +%Y%m%d)
+          for q in \
+            "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial=$D1&dataFinal=$D2&codigoModalidadeContratacao=6&pagina=1&tamanhoPagina=10" \
+            "https://pncp.gov.br/api/consulta/v1/atas?dataInicial=$D1&dataFinal=$D2&pagina=1&tamanhoPagina=10" \
+            "https://pncp.gov.br/api/search/?q=caneta%20esferografica&tipos_documento=edital&pagina=1&tam_pagina=5" ; do
+            echo "=================== $q"
+            curl -sS -m 40 -w '\nHTTP %{http_code} em %{time_total}s\n' "$q" | head -c 2500
+            echo
+          done
